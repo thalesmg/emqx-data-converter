@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+rebar3 escriptize
+
+ERL_ROOT=$(erl -noinput -eval 'io:format("~s",[code:root_dir()]),halt().')
+ERL_DIR=$(basename $ERL_ROOT)
+rm -rf _build/emqx_data_converter
+cp -R ${ERL_ROOT%/} _build/
+mv _build/default/bin/emqx_data_converter _build/$ERL_DIR/bin/emqx_data_converter.escript
+cp -f _build/$ERL_DIR/bin/escript _build/$ERL_DIR/bin/emqx_data_converter
+mkdir _build/emqx_data_converter
+mv _build/$ERL_DIR/* _build/emqx_data_converter
+tar -czf _build/emqx_data_converter.tar.gz -C _build emqx_data_converter
+rm -rf _build/emqx_data_converter
+rm -rf _build/$ERL_DIR
