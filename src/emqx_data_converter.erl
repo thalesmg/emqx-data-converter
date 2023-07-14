@@ -25,8 +25,7 @@
 -type user_id() :: binary().
 
 -record(user_info,
-        {
-         user_id :: {user_group(), user_id()},
+        {user_id :: {user_group(), user_id()},
          password_hash :: binary(),
          salt :: binary(),
          is_superuser :: boolean()
@@ -68,22 +67,47 @@
 -type rule() :: {permission(), action(), topic()}.
 -type rules() :: [rule()].
 
--record(emqx_acl, {
-    who :: ?ACL_TABLE_ALL | {?ACL_TABLE_USERNAME, binary()} | {?ACL_TABLE_CLIENTID, binary()},
-    rules :: rules()
-}).
+-record(emqx_acl,
+        {who :: ?ACL_TABLE_ALL | {?ACL_TABLE_USERNAME, binary()} | {?ACL_TABLE_CLIENTID, binary()},
+         rules :: rules()
+        }).
+
+-record(banned,
+        {who :: {clientid, binary()}
+              | {peerhost, inet:ip_address()}
+              | {username, binary()},
+         by :: binary(),
+         reason :: binary(),
+         at :: integer(),
+         until :: integer()
+        }).
+
+-record(psk_entry,
+        {psk_id :: binary(),
+         shared_secret :: binary(),
+         extra :: term()
+        }).
+
+-record(emqx_app,
+        {name = <<>> :: binary() | '_',
+         api_key = <<>> :: binary() | '_',
+         api_secret_hash = <<>> :: binary() | '_',
+         enable = true :: boolean() | '_',
+         desc = <<>> :: binary() | '_',
+         expired_at = 0 :: integer() | undefined | infinity | '_',
+         created_at = 0 :: integer() | '_'
+        }).
 
 -define(tar(_FileName_), _FileName_ ++ ?TAR_SUFFIX).
 -define(TAR_SUFFIX, ".tar.gz").
 
 -define(fmt_tar_err(_Expr_),
-    fun() ->
-        case _Expr_ of
-            {error, _Reason_} -> {error, erl_tar:format_error(_Reason_)};
-            _Other_ -> _Other_
-        end
-    end()
-).
+        fun() ->
+                case _Expr_ of
+                    {error, _Reason_} -> {error, erl_tar:format_error(_Reason_)};
+                    _Other_ -> _Other_
+                end
+        end()).
 
 -define(META_FILENAME, "META.hocon").
 -define(CLUSTER_HOCON_FILENAME, "cluster.hocon").
@@ -99,8 +123,6 @@
          {<<"${peerhost}">>, <<"%a">>},
          {<<"${password}">>, <<"%P">>}
         ]).
-
--compile(export_all).
 
 %%====================================================================
 %% API functions
@@ -180,13 +202,15 @@ main1(Opts) ->
     ok = setup_mnesia(),
     {ok, UserIdType1} = convert_auth_mnesia(InputMap, UserIdType),
     ok = convert_acl_mnesia(InputMap),
+    ok = convert_blacklist_mnesia(InputMap),
+    ok = convert_emqx_app_mnesia(InputMap),
     OutRawConf = convert_auth_modules(InputMap, #{output_dir => OutputDir,
                                                   user_id_type => UserIdType1,
                                                   jwt_type => JwtType}),
-
+    OutRawConf1 = convert_psk_auth(InputMap, OutRawConf),
     {BackupName, TarDescriptor} = prepare_new_backup(OutputDir),
     Edition = proplists:get_value(edition, Opts),
-    {ok, BackupTarName} = export(OutRawConf, BackupName, TarDescriptor, Edition),
+    {ok, BackupTarName} = export(OutRawConf1, BackupName, TarDescriptor, Edition),
     file:del_dir_r(BackupName),
     io:format("[INFO] Converted to EMQX 5.1 backup file: ~s~n", [BackupTarName]).
 
@@ -202,10 +226,25 @@ tabs_spec() ->
            {record_name, user_info},
            {attributes, record_info(fields, user_info)}
           ],
-     emqx_acl =>
+      emqx_acl =>
           [{type, ordered_set},
            {record_name, emqx_acl},
            {attributes, record_info(fields, emqx_acl)}
+          ],
+      emqx_banned =>
+          [{type, set},
+           {record_name, banned},
+           {attributes, record_info(fields, banned)}
+          ],
+      emqx_psk =>
+          [{type, ordered_set},
+           {record_name, psk_entry},
+           {attributes, record_info(fields, psk_entry)}
+          ],
+      emqx_app =>
+          [{type, set},
+           {record_name, emqx_app},
+           {attributes, record_info(fields, emqx_app)}
           ]
      }.
 
@@ -363,6 +402,79 @@ shrink_acl_rules(Rules0) ->
       end,
       maps:values(maps:groups_from_list(KeyFun, Rules0))
      ).
+
+convert_blacklist_mnesia(#{<<"blacklist">> := BlackList}) ->
+   lists:foreach(
+     fun(#{<<"who">> := Who, <<"reason">> := Reason, <<"by">> := By,
+           <<"at">> := At, <<"until">> := Until}) ->
+             Who1 = banned_who(Who),
+             ok = mnesia:dirty_write(
+                    emqx_banned,
+                    #banned{who = Who1, by = By, reason = Reason, at = At, until = Until}
+                   )
+     end,
+     BlackList);
+convert_blacklist_mnesia(_InputMap) ->
+    ok.
+
+banned_who(#{<<"peerhost">> := Addr}) ->
+    {ok, IPAddr} = inet:parse_address(Addr),
+    {peerhost, IPAddr};
+banned_who(#{<<"username">> := User}) ->
+    {username, User};
+banned_who(#{<<"clientid">> := Client}) ->
+    {clientid, Client}.
+
+convert_emqx_app_mnesia(#{<<"apps">> := Apps}) ->
+    lists:foreach(fun(#{<<"id">> := <<"admin">>}) -> ok;
+                     (#{<<"id">> := Id, <<"secret">> := Sec, <<"name">> := N, <<"desc">> := D,
+                       <<"status">> := St, <<"expired">> := Exp}) ->
+                          Exp1 = case Exp of
+                                     <<"undefined">> -> infinity;
+                                     Ts -> Ts
+                                 end,
+                          ok = mnesia:dirty_write(
+                                 #emqx_app{api_key = Id, api_secret_hash = hash(Sec), desc = D,
+                                           name = N, expired_at = Exp1, enable = St})
+                  end,
+                  Apps);
+convert_emqx_app_mnesia(_InputMap) ->
+    ok.
+
+%% Copy of `emqx_dashboard_admin:hash/1` (EMQX 5.1)
+hash(Password) ->
+    SaltBin = salt(),
+    <<SaltBin/binary, (sha256(SaltBin, Password))/binary>>.
+
+salt() ->
+    <<X:16/big-unsigned-integer>> = crypto:strong_rand_bytes(2),
+    iolist_to_binary(io_lib:format("~4.16.0b", [X])).
+
+sha256(SaltBin, Password) ->
+    crypto:hash('sha256', <<SaltBin/binary, Password/binary>>).
+
+convert_psk_auth(#{<<"modules">> := Modules}, OutRawConf) ->
+    PskModules = lists:filter(fun(#{<<"type">> := <<"psk_authentication">>}) -> true;
+                                 (_) -> false
+                              end,
+                              Modules),
+    case PskModules of
+        [#{<<"enabled">> := IsEnabled, <<"config">> := #{<<"psk_file">> := #{<<"file">> := F}}}] ->
+            psk_auth(IsEnabled, F, OutRawConf);
+        _ ->
+            OutRawConf
+    end;
+convert_psk_auth(_InputMap, OutRawConf) ->
+    OutRawConf.
+
+psk_auth(IsEnabled, FileContent, OutRawConf) ->
+    lists:foreach(
+      fun(IdentitySec) ->
+              [Identity, Secret] = binary:split(IdentitySec, <<":">>, [trim_all]),
+              ok = mnesia:dirty_write(emqx_psk, #psk_entry{psk_id = Identity, shared_secret = Secret})
+      end,
+      binary:split(FileContent, <<"\n">>, [global, trim_all])),
+    OutRawConf#{<<"psk_authentication">> => #{<<"enable">> => IsEnabled}}.
 
 convert_auth_modules(#{<<"modules">> := Modules} = InputMap, Opts) ->
     Mapping = #{<<"mnesia_authentication">> => fun convert_mnesia_auth/2,
@@ -768,12 +880,14 @@ mongo_authn(InConf, OutMongoConf) ->
                               <<"password_hash_algorithm">> => convert_passw_hash(PasswHash),
                               <<"collection">> => Collection,
                               <<"filter">> => convert_mongo_selector(Selector)},
-            maps:merge(AuthnConf, convert_mongo_fields(Fields))
+            AuthnConf1 = maybe_add_mongo_superuser(InConf, Collection, AuthnConf),
+            maps:merge(AuthnConf1, convert_mongo_fields(Fields))
     end.
 
 maybe_add_mongo_superuser(InConf, AuthnCollection, AuthnConf) ->
     SuperCollection = string:trim(maps:get(<<"super_query_collection">>, InConf, <<>>)),
     SuperField = string:trim(maps:get(<<"super_query_field">>, InConf, <<>>)),
+    %% Also check superuser selector to match authn selector?
     case {SuperCollection, SuperField} of
         {<<>>, <<>>} ->
             AuthnConf;
