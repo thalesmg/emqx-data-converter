@@ -13,6 +13,9 @@ Currently, the following configs/data are converted:
 - HTTP authn/authz config
 - MongoDB authn/authz config
 - JWT authn config
+- PSK authentication data
+- Blacklist (banned clients)
+- API Keys (Applications)
 
 Incompatibilities that cannot be handled by the converter automatically are printed to the stdout,
 please don't ignore these warnings, as they may be helpful to correct compatibility issues afterwards.
@@ -55,7 +58,7 @@ Help command contains info about several 'business logic' options, please make s
 
 # Build
 
-## Dependencies
+## Prerequisites
 
 Install the following dependencies:
 
