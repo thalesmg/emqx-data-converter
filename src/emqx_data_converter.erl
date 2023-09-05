@@ -208,9 +208,10 @@ main1(Opts) ->
                                                   user_id_type => UserIdType1,
                                                   jwt_type => JwtType}),
     OutRawConf1 = convert_psk_auth(InputMap, OutRawConf),
+    OutRawConf2 = convert_rules_resources(InputMap, OutRawConf1),
     {BackupName, TarDescriptor} = prepare_new_backup(OutputDir),
     Edition = proplists:get_value(edition, Opts),
-    {ok, BackupTarName} = export(OutRawConf1, BackupName, TarDescriptor, Edition),
+    {ok, BackupTarName} = export(OutRawConf2, BackupName, TarDescriptor, Edition),
     file:del_dir_r(BackupName),
     io:format("[INFO] Converted to EMQX 5.1 backup file: ~s~n", [BackupTarName]).
 
@@ -988,7 +989,9 @@ convert_http_auth(#{<<"enabled">> := IsEnabled, <<"config">> := InConf}, _Opts) 
                  <<"enable_pipelining">> => maps:get(<<"http_opts_pipelining">>, InConf, <<>>),
                  <<"connect_timeout">> => maps:get(<<"http_opts_connect_timeout">>, InConf, <<>>)
                 },
-    HTTPOpts1 = maps:filter(fun(_K, V) when is_binary(V) -> string:trim(V) =/= <<>>; (_, _) -> true end, HTTPOpts),
+    HTTPOpts1 = maps:filter(fun(_K, V) when is_binary(V) -> string:trim(V) =/= <<>>;
+                               (_, _) -> true
+                            end, HTTPOpts),
     OutConf1 = maps:merge(OutConf, HTTPOpts1),
     AuthUrl = string:trim(maps:get(<<"auth_req">>, InConf, <<>>)),
     SuperUrl = string:trim(maps:get(<<"super_req">>, InConf, <<>>)),
@@ -1249,17 +1252,21 @@ hash_algoritm(SaltPos, HashFunName) ->
     #{<<"name">> => HashFunName,
       <<"salt_position">> => SaltPos}.
 
-convert_ssl_opts(#{<<"ssl">> := false} = _InConf) ->
-    #{<<"enable">> => false};
-convert_ssl_opts(#{<<"ssl">> := true} = InConf) ->
-    SSL = convert_ssl_files(InConf, #{<<"enable">> => true}),
+convert_ssl_opts(InConf) ->
+    IsEnabled = maps:get(<<"ssl">>, InConf, false),
+    SSL = convert_ssl_files(InConf, #{<<"enable">> => IsEnabled}),
     Verify = case maps:get(<<"verify">>, InConf, false) of
                  true -> <<"verify_peer">>;
                  false -> <<"verify_none">>
              end,
-    %% seems to be available only for Mongo in EMQX4.4
-    SNI = maps:get(<<"server_name_indication">>, SSL, <<>>),
-    put_unless_empty(<<"server_name_indication">>, SNI, SSL#{<<"verify">> => Verify}).
+    SNI = maps:get(<<"server_name_indication">>, InConf, <<>>),
+    SSL1 = put_unless_empty(<<"server_name_indication">>, SNI, SSL#{<<"verify">> => Verify}),
+    %% Available only for InfluxDB
+    case InConf of
+        #{<<"tls_version">> := TLSVersion} ->
+            SSL1#{<<"versions">> => [TLSVersion]};
+        _-> SSL1
+    end.
 
 convert_ssl_files(InConf, SSL) ->
     Keys = [<<"cacertfile">>, <<"certfile">>, <<"keyfile">>],
@@ -1289,3 +1296,587 @@ bin(Data) ->
 
 local_datetime(MillisecondTs) ->
     calendar:system_time_to_local_time(MillisecondTs, millisecond).
+
+convert_rules_resources(InputMap, OutRawConf) ->
+    Rules = maps:get(<<"rules">>, InputMap, []),
+    Resources = maps:get(<<"resources">>, InputMap, []),
+    {OutRules, Bridges} =
+        lists:foldl(
+          fun(Rule, {RulesAcc, BridgesAcc}) ->
+                  {{OutRuleId, OutRule}, BridgesAcc1} = convert_rule(Rule, Resources, BridgesAcc),
+                  {RulesAcc#{OutRuleId => OutRule}, BridgesAcc1}
+          end,
+          {#{}, #{}},
+          Rules),
+    %% TODO convert resources not bound to any actions, but it may be possible only for a subset of
+    %% EMQX 5.1 bridges that don't require a CMD
+    OutRawConf#{<<"rule_engine">> => #{<<"rules">> => OutRules}, <<"bridges">> => Bridges}.
+
+convert_rule(Rule, Resources, Bridges) ->
+    #{<<"id">> := Id, <<"rawsql">> := SQL, <<"enabled">> := IsEnabled,
+      <<"description">> := Desc, <<"actions">> := Actions} = Rule,
+    {OutActions, OutBridges} =
+        lists:foldr(
+          fun(Action, {ActionsAcc, BridgesAcc}) ->
+                  case convert_action(Action, Resources) of
+                      {OutAction, {BrType, BrName, BrConf}} ->
+                          ActionsAcc1 = [OutAction | ActionsAcc],
+                          BridgesAcc1 = maps:update_with(
+                                          BrType,
+                                          fun(BrsByType) -> BrsByType#{BrName => BrConf} end,
+                                          #{BrName => BrConf},
+                                          BridgesAcc
+                                         ),
+                          {ActionsAcc1, BridgesAcc1};
+                      undefined ->
+                          {ActionsAcc, BridgesAcc}
+                  end
+          end,
+          {[], Bridges},
+          Actions),
+    Id1 = binary:replace(Id, <<":">>, <<"_">>, [global]),
+    OutRule =  {Id1, #{<<"sql">> => SQL,
+                      <<"enable">> => IsEnabled,
+                      <<"description">> => Desc,
+                      <<"actions">> => OutActions}},
+    {OutRule, OutBridges}.
+
+convert_action(#{<<"name">> := Name, <<"id">> := Id,
+                 <<"args">> := #{<<"$resource">> := ResId} = Args} = _Action,
+               Resources) ->
+    %% NOTE: EMQX 4.4 fallbacks are ignored, log them if they are not empty?
+    case resource_by_id(ResId, Resources, Id) of
+        #{<<"id">> := ResId, <<"type">> := ResType, <<"config">> := ResConf} ->
+            Bridge = action_resource_to_bridge(Name, Id, Args, ResId, ResType, ResConf),
+            case Bridge of
+                {BridgeType, BridgeName, _BridgeConf} ->
+                    OutAction = <<BridgeType/binary, ":", BridgeName/binary>>,
+                    {OutAction, Bridge};
+                undefined -> undefined
+            end;
+        undefined -> undefined
+    end.
+
+-define(DATA_ACTION, <<"data_to_", _/binary>>).
+
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
+                          <<"backend_redis_", RedisType/binary>>, ResConf) ->
+    #{<<"cmd">> := Cmd} = Args,
+    redis_bridge(ActId, Cmd, ResId, RedisType, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS/binary>>, ResConf)
+  when RDBMS =:= <<"pgsql">>;
+       RDBMS =:= <<"mysql">>;
+       RDBMS =:= <<"sqlserver">>;
+       RDBMS =:= <<"oracle">>;
+       RDBMS =:= <<"matrix">>;
+       RDBMS =:= <<"timescale">> ->
+    %% TODO: there are some exta args that can be converted:
+    %%     "insert_mode": "async",
+    %%     "enable_batch": true,
+    %%     "batch_time": 10,
+    %%     "batch_size": 100,
+    #{<<"sql">> := SQL} = Args,
+    sql_bridge(RDBMS, ActId, SQL, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
+                          <<"backend_mongo_", MongoType/binary>>, ResConf) ->
+    #{<<"payload_tmpl">> := PayloadTmpl, <<"collection">> := Collection} = Args,
+    mongodb_bridge(ActId, PayloadTmpl, Collection, ResId, MongoType, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
+    %% TODO: extra args can be converted to bridge resource_opts
+    %%     "sync_timeout": 5000,
+    %%     "insert_mode": "async",
+    %%     "enable_batch": true,
+    %%     "batch_time": 10,
+    %%     "batch_size": 100,
+    #{<<"sql">> := SQL} = Args,
+    cassandra_bridge(ActId, SQL, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
+    %% TODO: extra args:
+    %%    "sync_timeout": 5000,
+    %%    "insert_mode": "async",
+    %%    "enable_batch": true,
+    %%    "batch_time": 10,
+    %%    "batch_size": 100,
+    #{<<"sql">> := SQL} = Args,
+    clickhouse_bridge(ActId, SQL, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
+    #{<<"table">> := Table} = Args,
+    dynamo_bridge(ActId, Table, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
+    #{<<"stream">> := Stream,
+      <<"payload_tmpl">> := PayloadTempl} = Args,
+    hstreamdb_bridge(ActId, PayloadTempl, Stream, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
+                          <<"backend_influxdb_http", InfluxVer/binary>>, ResConf) ->
+    io:format("[WARNING] EMQX 5.1 InfluxDB bridge has no \"int_suffix\" alternative.~n"
+              "If needed, please add necessary suffixes manually to EMQX 5.1 \"write_syntax\"~n~n",
+              []),
+    influxdb_bridge(ActId, Args, InfluxVer, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
+    opentsdb_bridge(ActId, Args, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
+    %% TODO:
+    %%    "insert_mode": "async",
+    %%    "enable_batch": true,
+    %%    "batch_time": 10,
+    %%    "batch_size": 100
+    #{<<"sql">> := SQL} = Args,
+    tdengine_bridge(ActId, SQL, maps:get(<<"db_name">>, Args, <<>>), ResId, ResConf);
+%%action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_iotdb">>, ResConf) ->
+%%    %% TODO: looks like it may need rewriting rule sql to port it to EMQX5.1
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, ResConf) ->
+    webhook_bridge(ActId, Args, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
+    pulsar_producer_bridge(ActId, Args, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
+    rabbit_producer_bridge(ActId, Args, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
+    rocket_producer_bridge(ActId, Args, ResId, ResConf);
+action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_kafka">>, ResConf) ->
+    kafka_producer_bridge(ActId, Args, ResId, ResConf);
+action_resource_to_bridge(Action, _ActId, _Args, _ResId, ResType, _ResConf) ->
+    io:format("[WARNING] EMQX 4.4 action: ~s and/or resource: ~p are not supported by EMQX 5.1 "
+              "and will be skipped.~n~n",
+              [Action, ResType]),
+    undefined.
+
+%% Dashboard doesn't allow creating an action without resource, this function must must be safe
+%% to use with a valid input file
+resource_by_id(ResId, Resources, ActionId) ->
+    case lists:filter(fun(#{<<"id">> := Id}) -> Id =:= ResId end, Resources) of
+        [Resource] -> Resource;
+        [] ->
+            io:format("[WARNING] Resource \"~s\" referenced in rule action \"~s\" is missing"
+                      " in the input file.~n", [ResId, ActionId]),
+            undefined
+    end.
+
+%% Use action ID + resouce ID as bridge name, since the same resource can be reused in different
+%% actions (with different CMDs) in EMQX 4.4 while CMD is a part of a bridge in EMQX 5.1
+bridge_name(ResourceId, ActionId) ->
+    ResourceId1 = case string:prefix(ResourceId, <<"resource:">>) of
+                      nomatch -> ResourceId;
+                      Id -> Id
+                  end,
+    ResourceId2 = binary:replace(ResourceId1, <<":">>, <<"_">>, [global]),
+    <<ActionId/binary, "_", ResourceId2/binary>>.
+
+filter_out_empty(Map) ->
+    maps:filter(fun(_K, V) -> V =/= <<>> end, Map).
+
+redis_bridge(ActionId, Cmd, ResId, RedisType, ResConf) ->
+    BridgeName = bridge_name(ResId, ActionId),
+    CommonFields = [<<"server">>, <<"servers">>, <<"pool_size">>,
+                    <<"database">>, <<"password">>, <<"sentinel">>],
+    OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
+    OutConf1 = case RedisType of
+                   <<"cluster">> -> maps:remove(<<"database">>, OutConf);
+                   _  -> OutConf
+               end,
+    OutConf2 = OutConf1#{<<"command_template">> => [bin(L) || L <- string:lexemes(str(Cmd), " ")],
+                         <<"ssl">> => convert_ssl_opts(ResConf)},
+    {<<"redis_", RedisType/binary>>, BridgeName, OutConf2}.
+
+sql_bridge(RDBMS, ActionId, SQL, ResId, ResConf) ->
+    BridgeName = bridge_name(ResId, ActionId),
+    ResConf1 = case ResConf of
+                   %% MySQL and Oracle
+                   #{<<"user">> := Username} -> ResConf#{<<"username">> => Username};
+                   _ -> ResConf
+               end,
+    CommonFields = [<<"server">>,
+                    <<"pool_size">>,
+                    <<"database">>,
+                    <<"password">>,
+                    <<"username">>,
+                    <<"driver">>, %% sqlserver
+                    <<"sid">>, %% oracle
+                    <<"service_name">> %% oracle
+                   ],
+    OutConf = filter_out_empty(maps:with(CommonFields, ResConf1)),
+    OutConf1 = OutConf#{<<"sql">> => SQL, <<"ssl">> => convert_ssl_opts(ResConf1)},
+    {RDBMS, BridgeName, OutConf1}.
+
+mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
+    Username = maps:get(<<"login">>, ResConf, <<>>),
+    CommonFields = [<<"pool_size">>,
+                    <<"database">>,
+                    <<"password">>,
+                    <<"w_mode">>,
+                    <<"srv_record">>,
+                    <<"servers">>],
+    OutConf = maps:with(CommonFields, ResConf),
+    OutConf1 = case MongoType of
+                   <<"single">> ->
+                       {Server, Conf} = maps:take(<<"servers">>, OutConf),
+                       Conf#{<<"server">> => Server};
+                   <<"rs">> ->
+                       RMode = maps:get(<<"r_mode">>, ResConf, <<>>),
+                       OutConf#{<<"r_mode">> => RMode,
+                                <<"replica_set_name">> => maps:get(<<"rs_set_name">>, ResConf)};
+                   <<"sharded">> -> OutConf
+               end,
+    OutConf2 = OutConf1#{<<"username">> => Username,
+                         <<"collection">> => Collection,
+                         <<"payload_template">> => PayloadTempl,
+                         <<"ssl">> => convert_ssl_opts(ResConf),
+                         %% required field in EMQX 5.1
+                         <<"resource_opts">> => #{}},
+    OutConf3 = case ResConf of
+                   #{<<"connectTimeoutMS">> := Timeout} when Timeout =/= <<>> ->
+                       OutConf2#{<<"topology">> => #{<<"connect_timeout_ms">> => Timeout}};
+                   _ -> OutConf2
+               end,
+    {<<"mongodb_", MongoType/binary>>, bridge_name(ResId, ActionId), filter_out_empty(OutConf3)}.
+
+cassandra_bridge(ActionId, SQL, ResId, #{<<"nodes">> := Servers} = ResConf) ->
+    CommonFields = [<<"keyspace">>,
+                    <<"password">>,
+                    <<"pool_size">>,
+                    <<"username">>],
+    OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
+    OutConf1 = OutConf#{<<"servers">> => Servers,
+                        <<"cql">> => SQL,
+                        <<"ssl">> => convert_ssl_opts(ResConf)},
+    {<<"cassandra">>, bridge_name(ResId, ActionId), OutConf1}.
+
+clickhouse_bridge(ActionId, SQL, ResId, #{<<"server">> := URL} = ResConf) ->
+    CommonFields = [<<"database">>,
+                    <<"pool_size">>,
+                    <<"username">>],
+    Passw = maps:get(<<"key">>, ResConf, <<>>),
+    OutConf = maps:with(CommonFields, ResConf),
+    OutConf1 = OutConf#{<<"password">> => Passw,
+                        <<"url">> => URL,
+                        <<"sql">> => SQL},
+    {<<"clickhouse">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+
+dynamo_bridge(ActionId, Table, ResId, ResConf) ->
+    CommonFields = [<<"pool_size">>,
+                    <<"url">>,
+                    <<"aws_access_key_id">>,
+                    <<"aws_secret_access_key">>],
+    OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
+    OutConf1 = OutConf#{<<"table">> => Table},
+    {<<"dynamo">>,  bridge_name(ResId, ActionId), OutConf1}.
+
+hstreamdb_bridge(ActionId, PayloadTempl, Stream, ResId, #{<<"server">> := URL} = ResConf) ->
+    CommonFields = [<<"pool_size">>, <<"grpc_timeout">>],
+    OutConf = maps:with(CommonFields, ResConf),
+    OutConf1 = OutConf#{<<"url">> => URL,
+                        <<"stream">> => Stream,
+                        <<"record_template">> => PayloadTempl,
+                        <<"ssl">> => convert_ssl_opts(ResConf)},
+    {<<"hstreamdb">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+
+influxdb_bridge(ActId, ActArgs, InfluxVer, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
+    %% TODO: check if the following params can/should be converted
+    %%    "enable_batch": true,
+    %%    "batch_time": 10,
+    %%    "batch_size": 100,
+    CommonFields = [<<"precision">>],
+    #{<<"measurement">> := Measurement,
+      <<"tags">> := Tags,
+      <<"fields">> := Fields,
+      <<"timestamp">> := Ts
+     } = ActArgs,
+    SSL = convert_ssl_opts(ResConf#{<<"ssl">> => maps:get(<<"https_enabled">>, ResConf, false)}),
+    TagsBin = influx_fields_bin(Tags),
+    FieldsBin = influx_fields_bin(Fields),
+    WriteSyntax = maybe_append_influx_tags(Measurement, TagsBin),
+    WriteSyntax1 = string:trim(<<WriteSyntax/binary, " ", FieldsBin/binary, " ", Ts/binary>>),
+    OutConf = maps:with(CommonFields, ResConf),
+    OutConf1 = OutConf#{<<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
+                        <<"ssl">> => SSL,
+                        <<"write_syntax">> => WriteSyntax1},
+    {InfluxVer1, OutConf2} =
+        case InfluxVer of
+            <<>> ->
+                Ver = <<"v1">>,
+                FieldsMapV1 = maps:with([<<"database">>, <<"password">>, <<"username">>], ResConf),
+                {Ver, maps:merge(OutConf1, FieldsMapV1)};
+            <<"_v2">> ->
+                Ver = <<"v2">>,
+                FieldsMapV2 = maps:with([<<"org">>, <<"token">>, <<"bucket">>], ResConf),
+                {Ver, maps:merge(OutConf1, FieldsMapV2)}
+        end,
+    {<<"influxdb_api_", InfluxVer1/binary>>, bridge_name(ResId, ActId), filter_out_empty(OutConf2)}.
+
+maybe_append_influx_tags(Measurement, <<>> = _Tags) ->
+    Measurement;
+maybe_append_influx_tags(Measurement, Tags) ->
+    <<Measurement/binary, ",", Tags/binary>>.
+influx_fields_bin(FieldsOrTags) ->
+    %% TODO: quote string literals in field values?
+    bin(lists:join(<<",">>, [<<K/binary, "=", V/binary>> || {K, V} <- maps:to_list(FieldsOrTags)])).
+
+opentsdb_bridge(ActId, Args, ResId, ResConf) ->
+    OutConf = maps:merge(maps:with([<<"summary">>, <<"details">>], Args),
+                         maps:with([<<"server">>, <<"pool_size">>], ResConf)),
+    QueryMode = case maps:get(<<"sync">>, Args, false) of
+                    true -> <<"sync">>;
+                    _ -> <<"async">>
+                end,
+    OutConf1 = OutConf#{<<"resource_opts">> => #{<<"query_mode">> => QueryMode}},
+    {<<"opents">>, bridge_name(ResId, ActId), filter_out_empty(OutConf1)}.
+
+tdengine_bridge(ActionId, SQL, Database, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
+    CommonFields = [<<"pool_size">>,
+                    <<"password">>,
+                    <<"username">>],
+    OutConf = maps:with(CommonFields, ResConf),
+    OutConf1 = OutConf#{<<"sql">> => SQL,
+                        <<"database">> => Database,
+                        <<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>},
+    {<<"tdengine">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+
+webhook_bridge(ActionId, #{<<"method">> := Method} = Args, ResId, #{<<"url">> := URL} = ResConf) ->
+    Headers = maps:get(<<"headers">>, Args, #{}),
+    Body = maps:get(<<"body">>, Args, <<>>),
+    Path = maps:get(<<"path">>, Args, <<>>),
+    URL1 = <<(string:trim(URL, trailing, "/"))/binary, "/", (string:trim(Path, leading, "/"))/binary>>,
+    CommonFields = [<<"connect_timeout">>, <<"pool_size">>],
+    OutConf = maps:with(CommonFields, ResConf),
+    Pipelining = case maps:get(<<"enable_pipelining">>, ResConf, false) of
+                     false -> 1;
+                     %% Default EMQX 5.1 value
+                     true -> 100
+                 end,
+    OutConf1 = OutConf#{<<"url">> => URL1,
+                        <<"ssl">> => maybe_enable_ssl_opts(convert_ssl_opts(ResConf)),
+                        <<"headers">> => Headers,
+                        <<"body">> => Body,
+                        <<"enable_pipelining">> => Pipelining,
+                        <<"method">> => string:lowercase(Method)},
+    {<<"webhook">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+
+pulsar_producer_bridge(ActionId, #{<<"topic">> := Topic} = Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
+    Authn = case maps:get(<<"authentication_type">>, ResConf, <<>>) of
+                <<"none">> -> <<"none">>;
+                <<>> -> <<"none">>;
+                <<"basic">> ->
+                    [User, Pass] = binary:split(maps:get(<<"secret">>, ResConf), <<":">>),
+                    #{<<"username">> => User, <<"password">> => Pass};
+                <<"token">> ->
+                    #{<<"jwt">> => maps:get(<<"jwt">>, ResConf)}
+            end,
+    CommonFields = [<<"compression">>,<<"sync_timeout">>, <<"send_bufer">>, <<"batch_size">>],
+    OutConf = maps:with(CommonFields, ResConf),
+    Key = key_to_template(maps:get(<<"key">>, Args, <<>>)),
+    Tmpl = maps:get(<<"payload_tmpl">>, Args, <<>>),
+    Msg = put_unless_empty(<<"value">>, Tmpl, #{<<"key">> => Key}),
+    Buffer = filter_out_empty(
+               #{<<"mode">> => buffer_mode(maps:get(<<"buffer_mode">>, Args, <<>>)),
+                 <<"segment_bytes">> => maps:get(<<"segment_bytes">>, Args, <<>>),
+                 <<"per_partition_limit">> => maps:get(<<"max_total_bytes">>, Args, <<>>)
+                }),
+    OutConf1 = OutConf#{<<"servers">> => Servers,
+                        <<"authentication">> => Authn,
+                        <<"ssl">> => maybe_enable_ssl_opts(convert_ssl_opts(ResConf)),
+                        <<"pulsar_topic">> => Topic,
+                        <<"strategy">> => maps:get(<<"strategy">>, Args, <<>>),
+                        <<"message">> => Msg,
+                        <<"buffer">> => Buffer,
+                        <<"retention_period">> => maps:get(<<"retention_period">>, Args, <<>>)
+                       },
+    case Args of
+        #{<<"type">> := <<"sync">>} ->
+            io:format("[WARNING] sync Pulsar bridge mode is not supported in EMQX 5.1,"
+                      " async mode will be used~n~n", []);
+        _ -> ok
+    end,
+    {<<"pulsar_producer">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+
+%% Pulsar, Kafka producer
+key_to_template(<<"none">>) -> <<>>;
+%% TODO: what if the rule doesn't select it?
+key_to_template(<<"topic">>) -> <<"${topic}">>;
+key_to_template(<<"clientid">>) -> <<"${clientid}">>;
+key_to_template(<<"username">>) -> <<"${username}">>;
+key_to_template(Other) -> Other.
+
+buffer_mode(<<"Memory">>) -> <<"memory">>;
+buffer_mode(<<"Disk">>) -> <<"disk">>;
+buffer_mode(<<"Memory+Disk">>) -> <<"hybrid">>;
+buffer_mode(<<>>) -> <<>>.
+
+rabbit_producer_bridge(ActionId, Args, ResId, #{<<"server">> := Server} = ResConf) ->
+    {Host, Port} = case binary:split(Server, <<":">>) of
+                       [H, P] -> {H, binary_to_integer(P)};
+                       [H] -> {H, <<>>}
+                   end,
+    CommonFields = [<<"username">>, <<"password">>, <<"pool_size">>,
+                    <<"virtual_host">>, <<"timeout">>, <<"heartbeat">>],
+    OutConf = maps:with(CommonFields, ResConf),
+    #{<<"exchange">> := Exchange, <<"routing_key">> := RoutingKey} = Args,
+    DeliveryMode = case maps:get(<<"durable">>, Args, false) of
+                       true -> <<"persistent">>;
+                       false -> <<"non_persistent">>
+                   end,
+    OutConf1 = OutConf#{<<"server">> => Host,
+                        <<"port">> => Port,
+                        <<"routing_key">> => RoutingKey,
+                        <<"exchange">> => Exchange,
+                        <<"payload_template">> => maps:get(<<"payload_tmpl">>, Args, <<>>),
+                        <<"delivery_mode">> => DeliveryMode
+                       },
+    {<<"rabbitmq">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+
+rocket_producer_bridge(ActionId, Args, ResId, ResConf) ->
+    CommonFields = [<<"servers">>, <<"send_buffer">>,
+                    <<"refresh_interval">>, <<"sync_timeout">>,
+                    <<"secret_key">>, <<"access_key">>, <<"security_token">>],
+    OutConf = maps:with(CommonFields, ResConf),
+    maybe_warn_not_supported("RocketMQ bridge", "namespace", maps:get(<<"namespace">>, ResConf, <<>>)),
+    maybe_warn_not_supported("RocketMQ bridge", "key", maps:get(<<"key">>, ResConf, <<>>)),
+    maybe_warn_not_supported("RocketMQ bridge",
+                             "strategy",
+                             maps:get(<<"strategy">>, ResConf, <<>>),
+                             [<<>>, <<"roundrobin">>]),
+    ResOpts = filter_out_empty(#{<<"query_mode">> => maps:get(<<"type">>, Args, <<>>),
+                                 <<"batch_size">> => maps:get(<<"batch_size">>, Args, <<>>)}),
+    OutConf1 = OutConf#{<<"resource_opts">> => ResOpts,
+                        <<"topic">> => maps:get(<<"topic">>, Args),
+                        <<"template">> => maps:get(<<"payload_tmpl">>, Args, <<>>)},
+    {<<"rocketmq">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+
+kafka_producer_bridge(ActionId, Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
+    Strategy = case maps:get(<<"strategy">>, Args, <<>>) of
+                   <<"roundrobin">> ->
+                       io:format("[WARNING] Round-robin partition strategy is not supported by Kafka producer "
+                                 "bridge in EMQX 5.1. EMQX 5.1 will use \"random\" strategy by default.~n~n",
+                                 []),
+                       <<>>;
+                   S -> S
+               end,
+    KafkaBuffer = filter_out_empty(
+                    #{<<"segment_bytes">> => maps:get(<<"segments_bytes">>, Args, <<>>),
+                      <<"mode">> => buffer_mode(maps:get(<<"cache_mode">>, Args, <<>>)),
+                      <<"memory_overload_protection">> => maps:get(<<"highmem_drop">>, Args, <<>>),
+                      <<"per_partition_limit">> => maps:get(<<"max_total_bytes">>, Args, <<>>)
+                     }
+                   ),
+    CommonKafkaArgOpts = [<<"required_acks">>,
+                          <<"topic">>,
+                          <<"partition_count_refresh_interval">>,
+                          <<"kafka_headers">>],
+    %% Looks like there are no alternatives for:
+    %%     "batch_time",
+    %%     "batch_size",
+    %%     "batch_keep_msg_order",
+    %%     "batch_drop_factor"
+    %% in EMQX 5.1.
+    %% Moreover, in EMQX 4.4.10 the above were renamed to:
+    %%     "message_accumulation_interval",
+    %%     "message_accumulation_size",
+    %%     "message_accumulation_keep_msg_order",
+    %%     "message_accumulation_drop_factor"
+    ExtHeaders = lists:map(
+                   fun(#{<<"key">> := Key, <<"value">> := Val}) ->
+                           #{<<"kafka_ext_header_key">> => Key,
+                             <<"kafka_ext_header_value">> => Val}
+                   end,
+                   maps:get(<<"kafka_ext_headers">>, Args, [])
+                  ),
+    KafkaOpts = maps:with(CommonKafkaArgOpts, Args),
+    HeaderEncodeMode = string:lowercase(maps:get(<<"kafka_header_value_encode_mode">>, Args, <<>>)),
+    KafkaOpts1 = filter_out_empty(
+                   KafkaOpts#{<<"compression">> => maps:get(<<"compression">>, ResConf, <<>>),
+                              <<"sync_query_timeout">> => maps:get(<<"sync_timeout">>, ResConf, <<>>),
+                              <<"max_batch_bytes">> => maps:get(<<"max_batch_bytes">>, ResConf, <<>>),
+                              <<"query_mode">> => maps:get(<<"type">>, Args, <<>>),
+                              <<"partition_strategy">> => Strategy,
+                              <<"buffer">> => KafkaBuffer,
+                              <<"message">> =>
+                                  filter_out_empty(
+                                    #{<<"key">> => key_to_template(maps:get(<<"key">>, Args, <<>>)),
+                                      <<"value">> => maps:get(<<"payload_tmpl">>, Args, <<>>)
+                                     }),
+                              <<"kafka_header_value_encode_mode">> => HeaderEncodeMode,
+                              <<"kafka_ext_headers">> => ExtHeaders
+                             }),
+    SocketOpts = filter_out_empty(
+                   #{<<"sndbuf">> => maps:get(<<"send_buffer">>, ResConf, <<>>),
+                     <<"tcp_keepalive">> => keepalive(maps:get(<<"tcp_keepalive">>, ResConf, <<>>))}
+                  ),
+    OutConf = #{<<"bootstrap_hosts">> => Servers,
+                <<"ssl">> => convert_ssl_opts(ResConf),
+                <<"authentication">> => kafka_auth(ResConf),
+                <<"min_metadata_refresh_interval">> =>
+                    maps:get(<<"min_metadata_refresh_interval">>, ResConf, <<>>),
+                <<"kafka">> => KafkaOpts1,
+                <<"socket_opts">> => SocketOpts
+               },
+    {<<"kafka">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf)}.
+
+keepalive(<<>>) ->
+    <<>>;
+keepalive(Val) ->
+    case hocon_postprocess:duration(Val) of
+        0 -> <<>>;
+        I when is_integer(I) ->
+            ISecBin = integer_to_binary(ceiling(I / 1000)),
+            %% Default probes is 3, see 4.4 emqx_bridge_kafka_actions.erl: tcp_keepalive/1
+            <<ISecBin/binary, ",", ISecBin/binary, ",3">>;
+        _ ->
+            <<>>
+    end.
+
+ceiling(X) ->
+    T = erlang:trunc(X),
+    case (X - T) of
+        Neg when Neg < 0 -> T;
+        Pos when Pos > 0 -> T + 1;
+        _ -> T
+    end.
+
+kafka_auth(ResConf) ->
+    case maps:get(<<"authentication_mechanism">>, ResConf, <<>>) of
+        <<>> -> <<>>;
+        <<"NONE">> -> <<>>;
+        M when M =:= <<"SCRAM_SHA_256">>;
+               M =:= <<"SCRAM_SHA_512">>;
+               M =:= <<"PLAIN">> ->
+            A = maps:with([<<"username">>, <<"password">>], ResConf),
+            A#{<<"mechanism">> => string:lowercase(M)};
+        <<"KERBEROS">> ->
+            #{<<"kerberos_principal">> := Principal} = ResConf,
+            case ResConf of
+                #{<<"kerberos_keytab_path">> := KeyTabPath} ->
+                    io:format("[WARNING] Kafka uses Kerberos authnetication, please make sure that "
+                              "keytab file is copied to EMQX 5, EMQX 4.4 file path: ~s~n~n",
+                              [KeyTabPath]),
+                    #{<<"kerberos_keytab_file">> => KeyTabPath,
+                      <<"kerberos_principal">> => Principal};
+                #{<<"kerberos_keytab">> := #{<<"filename">> := Filename, <<"file">> := _}} ->
+                    io:format("[WARNING] The input file contains Kerberos keytab file \"~s\" content "
+                              "for Kafka bridge authentication, which can't be migrated to EMQX 5.1.~n"
+                              "The bridge config will be migrated without authentication, "
+                              "Please create keytab files on EMQX 5.1 nodes "
+                              "and add their paths in Kafka bridge config manually.~n~n",
+                              [Filename]),
+                    <<>>
+            end
+    end.
+
+maybe_warn_not_supported(ResourceDesc, Key, Val) ->
+    maybe_warn_not_supported(ResourceDesc, Key, Val, [<<>>]).
+maybe_warn_not_supported(ResourceDesc, Key, Val, Supported) ->
+    case lists:member(string:trim(Val), Supported) of
+        true ->
+            ok;
+        false ->
+            io:format("[WARNING] Resource: \"~s\" has field: \"~s\"=\"~s\", which is not supported "
+                      "in EMQX 5.1~n~n",
+                      [ResourceDesc, Key, Val])
+    end.
+
+maybe_enable_ssl_opts(Opts) when is_map_key(<<"cacertfile">>, Opts);
+                                         is_map_key(<<"certfile">>, Opts);
+                                         is_map_key(<<"keyfile">>, Opts);
+                                         is_map_key(<<"server_name_indication">>, Opts) ->
+    Opts#{<<"enable">> => true};
+maybe_enable_ssl_opts(#{<<"verify">> := <<"verify_peer">>} = Opts) ->
+    Opts#{<<"enable">> => true};
+maybe_enable_ssl_opts(Opts) ->
+    Opts.
