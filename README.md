@@ -16,6 +16,11 @@ Currently, the following configs/data are converted:
 - PSK authentication data
 - Blacklist (banned clients)
 - API Keys (Applications)
+- Rules and resources(bridges), except for:
+  - IoTDB
+  - GCP Pubsub
+  - republish rules
+  - Consumer bridges (modules in EMQX 4.4)
 
 Incompatibilities that cannot be handled by the converter automatically are printed to the stdout,
 please don't ignore these warnings, as they may be helpful to correct compatibility issues afterwards.
