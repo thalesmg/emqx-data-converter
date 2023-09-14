@@ -1548,11 +1548,12 @@ cassandra_bridge(ActionId, SQL, ResId, #{<<"nodes">> := Servers} = ResConf) ->
 
 clickhouse_bridge(ActionId, SQL, ResId, #{<<"server">> := URL} = ResConf) ->
     CommonFields = [<<"database">>,
-                    <<"pool_size">>,
-                    <<"username">>],
+                    <<"pool_size">>],
     Passw = maps:get(<<"key">>, ResConf, <<>>),
+    Username = maps:get(<<"user">>, ResConf, <<>>),
     OutConf = maps:with(CommonFields, ResConf),
     OutConf1 = OutConf#{<<"password">> => Passw,
+                        <<"username">> => Username,
                         <<"url">> => URL,
                         <<"sql">> => SQL},
     {<<"clickhouse">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
