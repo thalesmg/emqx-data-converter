@@ -1629,11 +1629,13 @@ influx_fields_bin(FieldsOrTags) ->
 opentsdb_bridge(ActId, Args, ResId, ResConf) ->
     OutConf = maps:merge(maps:with([<<"summary">>, <<"details">>], Args),
                          maps:with([<<"server">>, <<"pool_size">>], ResConf)),
+    BatchSize = maps:get(<<"max_batch_size">>, Args, <<>>),
     QueryMode = case maps:get(<<"sync">>, Args, false) of
                     true -> <<"sync">>;
                     _ -> <<"async">>
                 end,
-    OutConf1 = OutConf#{<<"resource_opts">> => #{<<"query_mode">> => QueryMode}},
+    ResOpts = put_unless_empty(<<"batch_size">>, BatchSize, #{<<"query_mode">> => QueryMode}),
+    OutConf1 = OutConf#{<<"resource_opts">> => ResOpts},
     {<<"opents">>, bridge_name(ResId, ActId), filter_out_empty(OutConf1)}.
 
 tdengine_bridge(ActionId, SQL, Database, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
