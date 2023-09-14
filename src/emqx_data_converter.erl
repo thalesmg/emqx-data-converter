@@ -1570,9 +1570,16 @@ dynamo_bridge(ActionId, Table, ResId, ResConf) ->
     {<<"dynamo">>,  bridge_name(ResId, ActionId), OutConf1}.
 
 hstreamdb_bridge(ActionId, PayloadTempl, Stream, ResId, #{<<"server">> := URL} = ResConf) ->
-    CommonFields = [<<"pool_size">>, <<"grpc_timeout">>],
+    CommonFields = [<<"pool_size">>],
+    GRPCTimeout = case ResConf of
+                      #{<<"grpc_timeout">> := T} when is_integer(T) ->
+                          <<(integer_to_binary(T))/binary, "ms">>;
+                      _ ->
+                          <<>>
+                  end,
     OutConf = maps:with(CommonFields, ResConf),
     OutConf1 = OutConf#{<<"url">> => URL,
+                        <<"grpc_timeout">> => GRPCTimeout,
                         <<"stream">> => Stream,
                         <<"record_template">> => PayloadTempl,
                         <<"ssl">> => convert_ssl_opts(ResConf)},
