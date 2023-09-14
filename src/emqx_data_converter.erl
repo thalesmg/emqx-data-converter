@@ -1565,10 +1565,12 @@ hstreamdb_bridge(ActionId, Args, ResId, #{<<"server">> := URL} = ResConf) ->
                       _ ->
                           <<>>
                   end,
+    PartitionKey = maps:get(<<"partitioning_key">>, Args, <<>>),
     OutConf = maps:with(CommonFields, ResConf),
     OutConf1 = OutConf#{<<"url">> => URL,
                         <<"grpc_timeout">> => GRPCTimeout,
                         <<"stream">> => Stream,
+                        <<"partition_key">> => PartitionKey,
                         <<"record_template">> => PayloadTempl,
                         <<"ssl">> => convert_ssl_opts(ResConf),
                         <<"resource_opts">> => common_args_to_res_opts(Args)},
