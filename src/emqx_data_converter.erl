@@ -1505,7 +1505,8 @@ maybe_add_ssl_sql(_RDBMS, OutConf, ResConf) ->
 
 mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
     Username = maps:get(<<"login">>, ResConf, <<>>),
-    CommonFields = [<<"pool_size">>,
+    CommonFields = [<<"auth_source">>,
+                    <<"pool_size">>,
                     <<"database">>,
                     <<"password">>,
                     <<"w_mode">>,
@@ -1529,8 +1530,9 @@ mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
                          %% required field in EMQX 5.1
                          <<"resource_opts">> => #{}},
     OutConf3 = case ResConf of
-                   #{<<"connectTimeoutMS">> := Timeout} when Timeout =/= <<>> ->
-                       OutConf2#{<<"topology">> => #{<<"connect_timeout_ms">> => Timeout}};
+                   #{<<"connectTimeoutMS">> := Timeout} when is_integer(Timeout) ->
+                       TimeoutBin = <<(integer_to_binary(Timeout))/binary, "ms">>,
+                       OutConf2#{<<"topology">> => #{<<"connect_timeout_ms">> => TimeoutBin}};
                    _ -> OutConf2
                end,
     {<<"mongodb_", MongoType/binary>>, bridge_name(ResId, ActionId), filter_out_empty(OutConf3)}.
