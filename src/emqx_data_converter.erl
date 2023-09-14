@@ -1494,8 +1494,14 @@ sql_bridge(RDBMS, ActionId, SQL, ResId, ResConf) ->
                     <<"service_name">> %% oracle
                    ],
     OutConf = filter_out_empty(maps:with(CommonFields, ResConf1)),
-    OutConf1 = OutConf#{<<"sql">> => SQL, <<"ssl">> => convert_ssl_opts(ResConf1)},
+    OutConf1 = maybe_add_ssl_sql(RDBMS, OutConf#{<<"sql">> => SQL}, ResConf1),
     {RDBMS, BridgeName, OutConf1}.
+
+maybe_add_ssl_sql(RDBMS, OutConf, _ResConf) when RDBMS =:= <<"oracle">>;
+                                                 RDBMS =:= <<"sqlserver">> ->
+    OutConf;
+maybe_add_ssl_sql(_RDBMS, OutConf, ResConf) ->
+    OutConf#{<<"ssl">> => convert_ssl_opts(ResConf)}.
 
 mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
     Username = maps:get(<<"login">>, ResConf, <<>>),
