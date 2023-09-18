@@ -1370,42 +1370,20 @@ action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS/
        RDBMS =:= <<"oracle">>;
        RDBMS =:= <<"matrix">>;
        RDBMS =:= <<"timescale">> ->
-    %% TODO: there are some exta args that can be converted:
-    %%     "insert_mode": "async",
-    %%     "enable_batch": true,
-    %%     "batch_time": 10,
-    %%     "batch_size": 100,
-    #{<<"sql">> := SQL} = Args,
-    sql_bridge(RDBMS, ActId, SQL, ResId, ResConf);
+    sql_bridge(RDBMS, ActId, Args, ResId, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
                           <<"backend_mongo_", MongoType/binary>>, ResConf) ->
     #{<<"payload_tmpl">> := PayloadTmpl, <<"collection">> := Collection} = Args,
     mongodb_bridge(ActId, PayloadTmpl, Collection, ResId, MongoType, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
-    %% TODO: extra args can be converted to bridge resource_opts
-    %%     "sync_timeout": 5000,
-    %%     "insert_mode": "async",
-    %%     "enable_batch": true,
-    %%     "batch_time": 10,
-    %%     "batch_size": 100,
-    #{<<"sql">> := SQL} = Args,
-    cassandra_bridge(ActId, SQL, ResId, ResConf);
+    cassandra_bridge(ActId, Args, ResId, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
-    %% TODO: extra args:
-    %%    "sync_timeout": 5000,
-    %%    "insert_mode": "async",
-    %%    "enable_batch": true,
-    %%    "batch_time": 10,
-    %%    "batch_size": 100,
-    #{<<"sql">> := SQL} = Args,
-    clickhouse_bridge(ActId, SQL, ResId, ResConf);
+    clickhouse_bridge(ActId, Args, ResId, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
     #{<<"table">> := Table} = Args,
     dynamo_bridge(ActId, Table, ResId, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
-    #{<<"stream">> := Stream,
-      <<"payload_tmpl">> := PayloadTempl} = Args,
-    hstreamdb_bridge(ActId, PayloadTempl, Stream, ResId, ResConf);
+    hstreamdb_bridge(ActId, Args, ResId, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
                           <<"backend_influxdb_http", InfluxVer/binary>>, ResConf) ->
     io:format("[WARNING] EMQX 5.1 InfluxDB bridge has no \"int_suffix\" alternative.~n"
@@ -1415,13 +1393,7 @@ action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
     opentsdb_bridge(ActId, Args, ResId, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
-    %% TODO:
-    %%    "insert_mode": "async",
-    %%    "enable_batch": true,
-    %%    "batch_time": 10,
-    %%    "batch_size": 100
-    #{<<"sql">> := SQL} = Args,
-    tdengine_bridge(ActId, SQL, maps:get(<<"db_name">>, Args, <<>>), ResId, ResConf);
+    tdengine_bridge(ActId, Args, ResId, ResConf);
 %%action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_iotdb">>, ResConf) ->
 %%    %% TODO: looks like it may need rewriting rule sql to port it to EMQX5.1
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, ResConf) ->
@@ -1464,6 +1436,18 @@ bridge_name(ResourceId, ActionId) ->
 filter_out_empty(Map) ->
     maps:filter(fun(_K, V) -> V =/= <<>> end, Map).
 
+common_args_to_res_opts(Args) ->
+    %% Async is default for both 4.4 and 5.1+
+    Mode = maps:get(<<"insert_mode">>, Args, <<"async">>),
+    ResOpts = #{<<"query_mode">> => Mode},
+    case Args of
+        #{<<"enable_batch">> := true, <<"batch_size">> := BatchSize} when BatchSize =/= <<>> ->
+            %% batch_time is not converted as it's hidden in EMQX 5
+            ResOpts#{<<"batch_size">> => BatchSize};
+        _ ->
+            ResOpts
+    end.
+
 redis_bridge(ActionId, Cmd, ResId, RedisType, ResConf) ->
     BridgeName = bridge_name(ResId, ActionId),
     CommonFields = [<<"server">>, <<"servers">>, <<"pool_size">>,
@@ -1477,7 +1461,7 @@ redis_bridge(ActionId, Cmd, ResId, RedisType, ResConf) ->
                          <<"ssl">> => convert_ssl_opts(ResConf)},
     {<<"redis_", RedisType/binary>>, BridgeName, OutConf2}.
 
-sql_bridge(RDBMS, ActionId, SQL, ResId, ResConf) ->
+sql_bridge(RDBMS, ActionId, #{<<"sql">> := SQL} = Args, ResId, ResConf) ->
     BridgeName = bridge_name(ResId, ActionId),
     ResConf1 = case ResConf of
                    %% MySQL and Oracle
@@ -1494,12 +1478,20 @@ sql_bridge(RDBMS, ActionId, SQL, ResId, ResConf) ->
                     <<"service_name">> %% oracle
                    ],
     OutConf = filter_out_empty(maps:with(CommonFields, ResConf1)),
-    OutConf1 = OutConf#{<<"sql">> => SQL, <<"ssl">> => convert_ssl_opts(ResConf1)},
-    {RDBMS, BridgeName, OutConf1}.
+    OutConf1 = OutConf#{<<"sql">> => SQL, <<"resource_opts">> => common_args_to_res_opts(Args)},
+    OutConf2 = maybe_add_ssl_sql(RDBMS, OutConf1, ResConf1),
+    {RDBMS, BridgeName, OutConf2}.
+
+maybe_add_ssl_sql(RDBMS, OutConf, _ResConf) when RDBMS =:= <<"oracle">>;
+                                                 RDBMS =:= <<"sqlserver">> ->
+    OutConf;
+maybe_add_ssl_sql(_RDBMS, OutConf, ResConf) ->
+    OutConf#{<<"ssl">> => convert_ssl_opts(ResConf)}.
 
 mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
     Username = maps:get(<<"login">>, ResConf, <<>>),
-    CommonFields = [<<"pool_size">>,
+    CommonFields = [<<"auth_source">>,
+                    <<"pool_size">>,
                     <<"database">>,
                     <<"password">>,
                     <<"w_mode">>,
@@ -1523,13 +1515,14 @@ mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
                          %% required field in EMQX 5.1
                          <<"resource_opts">> => #{}},
     OutConf3 = case ResConf of
-                   #{<<"connectTimeoutMS">> := Timeout} when Timeout =/= <<>> ->
-                       OutConf2#{<<"topology">> => #{<<"connect_timeout_ms">> => Timeout}};
+                   #{<<"connectTimeoutMS">> := Timeout} when is_integer(Timeout) ->
+                       TimeoutBin = <<(integer_to_binary(Timeout))/binary, "ms">>,
+                       OutConf2#{<<"topology">> => #{<<"connect_timeout_ms">> => TimeoutBin}};
                    _ -> OutConf2
                end,
     {<<"mongodb_", MongoType/binary>>, bridge_name(ResId, ActionId), filter_out_empty(OutConf3)}.
 
-cassandra_bridge(ActionId, SQL, ResId, #{<<"nodes">> := Servers} = ResConf) ->
+cassandra_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"nodes">> := Servers} = ResConf) ->
     CommonFields = [<<"keyspace">>,
                     <<"password">>,
                     <<"pool_size">>,
@@ -1537,18 +1530,21 @@ cassandra_bridge(ActionId, SQL, ResId, #{<<"nodes">> := Servers} = ResConf) ->
     OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
     OutConf1 = OutConf#{<<"servers">> => Servers,
                         <<"cql">> => SQL,
-                        <<"ssl">> => convert_ssl_opts(ResConf)},
+                        <<"ssl">> => convert_ssl_opts(ResConf),
+                        <<"resource_opts">> => common_args_to_res_opts(Args)},
     {<<"cassandra">>, bridge_name(ResId, ActionId), OutConf1}.
 
-clickhouse_bridge(ActionId, SQL, ResId, #{<<"server">> := URL} = ResConf) ->
+clickhouse_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"server">> := URL} = ResConf) ->
     CommonFields = [<<"database">>,
-                    <<"pool_size">>,
-                    <<"username">>],
+                    <<"pool_size">>],
     Passw = maps:get(<<"key">>, ResConf, <<>>),
+    Username = maps:get(<<"user">>, ResConf, <<>>),
     OutConf = maps:with(CommonFields, ResConf),
     OutConf1 = OutConf#{<<"password">> => Passw,
+                        <<"username">> => Username,
                         <<"url">> => URL,
-                        <<"sql">> => SQL},
+                        <<"sql">> => SQL,
+                       <<"resource_opts">> => common_args_to_res_opts(Args)},
     {<<"clickhouse">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
 dynamo_bridge(ActionId, Table, ResId, ResConf) ->
@@ -1560,20 +1556,27 @@ dynamo_bridge(ActionId, Table, ResId, ResConf) ->
     OutConf1 = OutConf#{<<"table">> => Table},
     {<<"dynamo">>,  bridge_name(ResId, ActionId), OutConf1}.
 
-hstreamdb_bridge(ActionId, PayloadTempl, Stream, ResId, #{<<"server">> := URL} = ResConf) ->
-    CommonFields = [<<"pool_size">>, <<"grpc_timeout">>],
+hstreamdb_bridge(ActionId, Args, ResId, #{<<"server">> := URL} = ResConf) ->
+    #{<<"stream">> := Stream, <<"payload_tmpl">> := PayloadTempl} = Args,
+    CommonFields = [<<"pool_size">>],
+    GRPCTimeout = case ResConf of
+                      #{<<"grpc_timeout">> := T} when is_integer(T) ->
+                          <<(integer_to_binary(T))/binary, "ms">>;
+                      _ ->
+                          <<>>
+                  end,
+    PartitionKey = maps:get(<<"partitioning_key">>, Args, <<>>),
     OutConf = maps:with(CommonFields, ResConf),
     OutConf1 = OutConf#{<<"url">> => URL,
+                        <<"grpc_timeout">> => GRPCTimeout,
                         <<"stream">> => Stream,
+                        <<"partition_key">> => PartitionKey,
                         <<"record_template">> => PayloadTempl,
-                        <<"ssl">> => convert_ssl_opts(ResConf)},
+                        <<"ssl">> => convert_ssl_opts(ResConf),
+                        <<"resource_opts">> => common_args_to_res_opts(Args)},
     {<<"hstreamdb">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
 influxdb_bridge(ActId, ActArgs, InfluxVer, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
-    %% TODO: check if the following params can/should be converted
-    %%    "enable_batch": true,
-    %%    "batch_time": 10,
-    %%    "batch_size": 100,
     CommonFields = [<<"precision">>],
     #{<<"measurement">> := Measurement,
       <<"tags">> := Tags,
@@ -1588,7 +1591,8 @@ influxdb_bridge(ActId, ActArgs, InfluxVer, ResId, #{<<"host">> := H, <<"port">> 
     OutConf = maps:with(CommonFields, ResConf),
     OutConf1 = OutConf#{<<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
                         <<"ssl">> => SSL,
-                        <<"write_syntax">> => WriteSyntax1},
+                        <<"write_syntax">> => WriteSyntax1,
+                       <<"resource_opts">> => common_args_to_res_opts(ActArgs)},
     {InfluxVer1, OutConf2} =
         case InfluxVer of
             <<>> ->
@@ -1613,21 +1617,24 @@ influx_fields_bin(FieldsOrTags) ->
 opentsdb_bridge(ActId, Args, ResId, ResConf) ->
     OutConf = maps:merge(maps:with([<<"summary">>, <<"details">>], Args),
                          maps:with([<<"server">>, <<"pool_size">>], ResConf)),
+    BatchSize = maps:get(<<"max_batch_size">>, Args, <<>>),
     QueryMode = case maps:get(<<"sync">>, Args, false) of
                     true -> <<"sync">>;
                     _ -> <<"async">>
                 end,
-    OutConf1 = OutConf#{<<"resource_opts">> => #{<<"query_mode">> => QueryMode}},
+    ResOpts = put_unless_empty(<<"batch_size">>, BatchSize, #{<<"query_mode">> => QueryMode}),
+    OutConf1 = OutConf#{<<"resource_opts">> => ResOpts},
     {<<"opents">>, bridge_name(ResId, ActId), filter_out_empty(OutConf1)}.
 
-tdengine_bridge(ActionId, SQL, Database, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
+tdengine_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
     CommonFields = [<<"pool_size">>,
                     <<"password">>,
                     <<"username">>],
     OutConf = maps:with(CommonFields, ResConf),
     OutConf1 = OutConf#{<<"sql">> => SQL,
-                        <<"database">> => Database,
-                        <<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>},
+                        <<"database">> => maps:get(<<"db_name">>, Args, <<>>),
+                        <<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
+                        <<"resource_opts">> => common_args_to_res_opts(Args)},
     {<<"tdengine">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
 webhook_bridge(ActionId, #{<<"method">> := Method} = Args, ResId, #{<<"url">> := URL} = ResConf) ->
