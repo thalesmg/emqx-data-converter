@@ -9,16 +9,16 @@
           "If omitted, the file is written to CWD."},
          {user_id_type, $u, "user-id-type", {binary, undefined},
           "User type (clientid or username) of built-in DB (Mnesia) authentication credentials to migrate. "
-          "EMQX 4.4 supports both clientid and username credentials at the same time, while EMQX 5.1 uses "
+          "EMQX 4.4 supports both clientid and username credentials at the same time, while EMQX 5.1 or later uses "
           "one type at a time. If this option is not provided, the user type that has more credentials in "
           "the input file will be chosen."},
          {jwt_type, $j, "jwt-type", {binary, undefined},
-          "JWT authentication type to migrate. Possible values: hmac-based, public-key, jwks. EMQX 5.1 supports "
+          "JWT authentication type to migrate. Possible values: hmac-based, public-key, jwks. EMQX 5.1 or later supports "
           "only one of the aforementioned types at a time. If this option is omitted, JWT authentication is migrated "
           "according to the following (descending) precedence: 1. jwks, 2. public-key, 3. hmac-based."},
          {edition, $e, "emqx-edition", {string, "ee"},
           "EMQX edition of the both input and output backup files. Possible values: ee, ce. "
-          "Please note that EMQX 5.1 doesn't allow to import ee backup file to ce cluster."},
+          "Please note that EMQX 5.1 or later doesn't allow to import ee backup file to ce cluster."},
          {input_file, undefined, undefined, string, "Input EMQX 4.4 backup JSON file path."}]).
 
 -type user_group() :: binary().
@@ -636,8 +636,8 @@ redis_authn(AuthnCmd, SuperCmd, PasswHash, Conf) ->
 redis_authz(<<>> = _AclCmd, _Conf) ->
     undefined;
 redis_authz(AclCmd, Conf) ->
-    io:format("[WARNING] Redis ACL data must be updated manually to be compatible with EMQX 5.1, "
-              "the config will be migrated but it won't work in EMQX 5.1 if data is not changed, "
+    io:format("[WARNING] Redis ACL data must be updated manually to be compatible with EMQX 5.1 or later, "
+              "the config will be migrated but it won't work in EMQX 5.x if data is not changed, "
               "please see more details at: "
               "https://docs.emqx.com/en/enterprise/v5.1/deploy/upgrade-from-v4.html#redis-1.~n~n",
               []),
@@ -756,8 +756,8 @@ sql_authz(_Type, <<>> = _AclQuery, _Conf) ->
     undefined;
 sql_authz(Type, AclQuery, Conf) ->
     io:format(
-      "[WARNING] ~s ACL data and query must be updated manually to be compatible with EMQX 5.1, "
-      "the config will be migrated but it won't work in EMQX 5.1 if data/query is not changed, "
+      "[WARNING] ~s ACL data and query must be updated manually to be compatible with EMQX 5.1 or later, "
+      "the config will be migrated but it won't work in EMQX 5.x if data/query is not changed, "
       "please see more details at: "
       "https://docs.emqx.com/en/enterprise/v5.1/deploy/upgrade-from-v4.html#mysql-postgresql.~n~n",
       [Type]
@@ -775,7 +775,7 @@ convert_sql_authn_q(Type, AuthnQ, SuperQ) ->
         _ ->
             io:format(
               "[WARNING] Failed to parse ~s authentication query: ~s. "
-              "It will be converted but may fail to work properly in EMQX 5.1. "
+              "It will be converted but may fail to work properly in EMQX 5.1 or later. "
               "Please update the query and/or data manually according to the documentation: "
               "https://docs.emqx.com/en/enterprise/v5.1/deploy/upgrade-from-v4.html#mysql-postgresql.~n~n",
               [Type, AuthnQ]
@@ -850,9 +850,9 @@ mongo_authz(InConf, OutMongoConf) ->
     case {Collection, Selectors} of
         {C, S} when C =/= <<>>, S =/= [] ->
             io:format(
-              "[WARNING] EMQX 4.4 MongoDB ACL data schema is not compatible with EMQX 5.1. "
+              "[WARNING] EMQX 4.4 MongoDB ACL data schema is not compatible with EMQX 5.1 or later. "
               "The configuration will be migrated but ACL data must be updated manually in MongoDB. "
-              "Otherwise, MongoDB authorization won't function properly in EMQX 5.1. Please see more details at: "
+              "Otherwise, MongoDB authorization won't function properly in EMQX 5.x. Please see more details at: "
               "https://docs.emqx.com/en/enterprise/v5.1/deploy/upgrade-from-v4.html#mongodb.~n~n",
               []
              ),
@@ -901,8 +901,8 @@ maybe_add_mongo_superuser(InConf, AuthnCollection, AuthnConf) ->
             AuthnConf#{<<"is_superuser_field">> => SuperField};
         {SuperCollection, _} ->
             io:format("[WARNING] Separate MongoDB collection is used as \"super_query_collection\", "
-                      "which is not compatible with EMQX 5.1. If you need to give clients super-user "
-                      "permissions in EMQX 5.1, please add is_superuser field to the main authentication "
+                      "which is not compatible with EMQX 5.1 or later. If you need to give clients super-user "
+                      "permissions in EMQX 5.x, please add is_superuser field to the main authentication "
                       "collection.~n~n",
                       []),
             AuthnConf
@@ -925,7 +925,7 @@ mongo_type(<<"unknown">> = _Type, _Server, _InConfig) ->
     %%TODO: add CLI opt for this case?
     io:format(
       "[WARNING] Skipping MongoDB auth/acl config because it uses \"unknown\" topology, "
-      "which is not compatible with EMQX 5.1. Please set a defined MongoDB topology in the input file "
+      "which is not compatible with EMQX 5.1 or later. Please set a defined MongoDB topology in the input file "
       "and run the converter again.~n~n",
       []
      ),
@@ -964,8 +964,8 @@ maybe_add_mongo_topology(InConf, OutConf) ->
 
 convert_http_auth(#{<<"enabled">> := IsEnabled, <<"config">> := InConf}, _Opts) ->
     io:format(
-      "[WARNING] EMQX 4.4 HTTP Auth/ACL service behaviour is not compatible with EMQX 5.1.~n"
-      "The configuration will be converted but it won't function properly in EMQX 5.1, "
+      "[WARNING] EMQX 4.4 HTTP Auth/ACL service behaviour is not compatible with EMQX 5.1 or later.~n"
+      "The configuration will be converted but it won't function properly, "
       "until HTTP service behaviour is updated accordingly, please read the documentation for more details:~n"
       "    https://docs.emqx.com/en/enterprise/v5.1/deploy/upgrade-from-v4.html#http~n"
       "    https://docs.emqx.com/en/enterprise/v5.1/deploy/upgrade-from-v4.html#http-1~n"
@@ -1005,8 +1005,8 @@ http_authn(AuthUrl, AuthParams, SuperUrl, OutConf) when AuthUrl =/= <<>>, AuthPa
         <<>> -> ok;
         _ ->
             io:format(
-              "[WARNING] EMQX 4.4 HTTP Auth/ACL uses super_req: ~s which is not compatible with EMQX 5.1.~n"
-              "If you need to give clients super-user permissions in EMQX 5.1, please add is_superuser "
+              "[WARNING] EMQX 4.4 HTTP Auth/ACL uses super_req: ~s which is not compatible with EMQX 5.1 or later.~n"
+              "If you need to give clients super-user permissions in EMQX 5.x, please add is_superuser "
               "field to the authentication response body.~n~n",
               [SuperUrl])
     end,
@@ -1043,11 +1043,11 @@ convert_jwt_auth(#{<<"enabled">> := IsEnabled, <<"config">> := InConf}, Opts) ->
     io:format(
       "[WARNING] JWT authentication module is present in the input file. "
       "It will be converted to EMQX 5.1, but tokens that use EMQX 4.4 placeholders (%u and %c) "
-      "in ACL claims are not compatible with EMQX 5.1.~n"
+      "in ACL claims are not compatible with EMQX 5.1 or later.~n"
       "For example: ~n"
       "    EMQX 4.4:  {..., \"acl\": {\"pub\": [\"some/stats/%c\"]}, ...}~n"
-      "    EMQX 5.1:  {..., \"acl\": {\"pub\": [\"some/stats/${clientid}\"]}, ...}~n"
-      "If you use placeholders in token claims, please make sure to update them to EMQX 5.1 format:~n"
+      "    EMQX 5.1 or later:  {..., \"acl\": {\"pub\": [\"some/stats/${clientid}\"]}, ...}~n"
+      "If you use placeholders in token claims, please make sure to update them to EMQX 5.x format:~n"
       "    %u -> ${username}~n"
       "    %c -> ${clientid}~n~n",
       []),
@@ -1151,7 +1151,7 @@ convert_mnesia_auth(#{<<"enabled">> := IsEnabled, <<"config">> := InConf}, Opts)
 
 warn_if_no_auth(Type, undefined, undefined) ->
     io:format("[WARNING] Skipping ~s Authn/Acl configuration as both acl query and auth query "
-                      "\"auth_cmd\" are empty. Such configuration would fail to load in EMQX 5.1, "
+                      "\"auth_cmd\" are empty. Such configuration would fail to load in EMQX 5.1 or later version, "
                       "as cmd/query is a required field.~n~n",
               [Type]);
 warn_if_no_auth(_Type, _Authn, _Authz) ->
@@ -1216,9 +1216,9 @@ convert_topic(Topic) ->
                   nomatch -> ok;
                   _Found ->
                       io:format("[WARNING] ACL file contains \"~s\" placeholder in the topic filter: "
-                                "\"~s\", which is not supported in EMQX 5.1. "
+                                "\"~s\", which is not supported in EMQX 5.1 or later. "
                                 "ACL file will be migrated but it will require a manual correction "
-                                "after importing to EMQX 5.1 in order to function properly.~n~n",
+                                "after importing to EMQX 5.1 or later version in order to function properly.~n~n",
                                 [UnsupportedTmpl, Topic])
               end
       end,
@@ -1250,7 +1250,7 @@ convert_passw_hash(AuthnName, PassHash) ->
 
 hash_algoritm(_SaltPos, <<"bcrypt">>, PassHash, AuthnName) ->
     io:format("[WARNING] ~s authentication configuration defines bcrypt hash algorithm with salt: \"~s\". "
-              "EMQX 5.1 and later ignores salt field stored in external DB for bcrypt and expects the salt to be "
+              "EMQX 5.1 or later ignores salt field stored in external DB for bcrypt and expects the salt to be "
               "a part of password hash field value, as it is usually included in the bcrypt hash-string.~n~n",
               [AuthnName, PassHash]),
     #{<<"name">> => <<"bcrypt">>};
@@ -1315,7 +1315,7 @@ convert_rules_resources(InputMap, OutRawConf) ->
           {#{}, #{}},
           Rules),
     %% TODO convert resources not bound to any actions, but it may be possible only for a subset of
-    %% EMQX 5.1 bridges that don't require a CMD
+    %% EMQX 5.1 or later bridges that don't require a CMD
     OutRawConf#{<<"rule_engine">> => #{<<"rules">> => OutRules}, <<"bridges">> => Bridges}.
 
 convert_rule(Rule, Resources, Bridges) ->
@@ -1392,8 +1392,8 @@ action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_hstreamdb
     hstreamdb_bridge(ActId, Args, ResId, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
                           <<"backend_influxdb_http", InfluxVer/binary>>, ResConf) ->
-    io:format("[WARNING] EMQX 5.1 InfluxDB bridge has no \"int_suffix\" alternative.~n"
-              "If needed, please add necessary suffixes manually to EMQX 5.1 \"write_syntax\"~n~n",
+    io:format("[WARNING] EMQX 5.1 or later InfluxDB bridge has no \"int_suffix\" alternative.~n"
+              "If needed, please add necessary suffixes manually to EMQX 5.1 or later \"write_syntax\"~n~n",
               []),
     influxdb_bridge(ActId, Args, InfluxVer, ResId, ResConf);
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
@@ -1413,7 +1413,7 @@ action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>,
 action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_kafka">>, ResConf) ->
     kafka_producer_bridge(ActId, Args, ResId, ResConf);
 action_resource_to_bridge(Action, _ActId, _Args, _ResId, ResType, _ResConf) ->
-    io:format("[WARNING] EMQX 4.4 action: ~s and/or resource: ~p are not supported by EMQX 5.1 "
+    io:format("[WARNING] EMQX 4.4 action: ~s and/or resource: ~p are not supported by EMQX 5.1 or later "
               "and will be skipped.~n~n",
               [Action, ResType]),
     undefined.
@@ -1430,7 +1430,7 @@ resource_by_id(ResId, Resources, ActionId) ->
     end.
 
 %% Use action ID + resouce ID as bridge name, since the same resource can be reused in different
-%% actions (with different CMDs) in EMQX 4.4 while CMD is a part of a bridge in EMQX 5.1
+%% actions (with different CMDs) in EMQX 4.4 while CMD is a part of a bridge in EMQX 5.1 or later
 bridge_name(ResourceId, ActionId) ->
     ResourceId1 = case string:prefix(ResourceId, <<"resource:">>) of
                       nomatch -> ResourceId;
@@ -1518,7 +1518,7 @@ mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
                          <<"collection">> => Collection,
                          <<"payload_template">> => PayloadTempl,
                          <<"ssl">> => convert_ssl_opts(ResConf),
-                         %% required field in EMQX 5.1
+                         %% required field in EMQX 5.1 or later
                          <<"resource_opts">> => #{}},
     OutConf3 = case ResConf of
                    #{<<"connectTimeoutMS">> := Timeout} when is_integer(Timeout) ->
@@ -1652,7 +1652,7 @@ webhook_bridge(ActionId, #{<<"method">> := Method} = Args, ResId, #{<<"url">> :=
     OutConf = maps:with(CommonFields, ResConf),
     Pipelining = case maps:get(<<"enable_pipelining">>, ResConf, false) of
                      false -> 1;
-                     %% Default EMQX 5.1 value
+                     %% Default EMQX 5.1 or later value
                      true -> 100
                  end,
     OutConf1 = OutConf#{<<"url">> => URL1,
@@ -1694,7 +1694,7 @@ pulsar_producer_bridge(ActionId, #{<<"topic">> := Topic} = Args, ResId, #{<<"ser
                        },
     case Args of
         #{<<"type">> := <<"sync">>} ->
-            io:format("[WARNING] sync Pulsar bridge mode is not supported in EMQX 5.1,"
+            io:format("[WARNING] sync Pulsar bridge mode is not supported in EMQX 5.1 or later,"
                       " async mode will be used~n~n", []);
         _ -> ok
     end,
@@ -1757,7 +1757,7 @@ kafka_producer_bridge(ActionId, Args, ResId, #{<<"servers">> := Servers} = ResCo
     Strategy = case maps:get(<<"strategy">>, Args, <<>>) of
                    <<"roundrobin">> ->
                        io:format("[WARNING] Round-robin partition strategy is not supported by Kafka producer "
-                                 "bridge in EMQX 5.1. EMQX 5.1 will use \"random\" strategy by default.~n~n",
+                                 "bridge in EMQX 5.1 or later. It will use \"random\" strategy by default.~n~n",
                                  []),
                        <<>>;
                    S -> S
@@ -1778,7 +1778,7 @@ kafka_producer_bridge(ActionId, Args, ResId, #{<<"servers">> := Servers} = ResCo
     %%     "batch_size",
     %%     "batch_keep_msg_order",
     %%     "batch_drop_factor"
-    %% in EMQX 5.1.
+    %% in EMQX 5.1 or later.
     %% Moreover, in EMQX 4.4.10 the above were renamed to:
     %%     "message_accumulation_interval",
     %%     "message_accumulation_size",
@@ -1863,9 +1863,9 @@ kafka_auth(ResConf) ->
                       <<"kerberos_principal">> => Principal};
                 #{<<"kerberos_keytab">> := #{<<"filename">> := Filename, <<"file">> := _}} ->
                     io:format("[WARNING] The input file contains Kerberos keytab file \"~s\" content "
-                              "for Kafka bridge authentication, which can't be migrated to EMQX 5.1.~n"
+                              "for Kafka bridge authentication, which can't be migrated to EMQX 5.1 or later.~n"
                               "The bridge config will be migrated without authentication, "
-                              "Please create keytab files on EMQX 5.1 nodes "
+                              "Please create keytab files on EMQX 5.1 (or later) nodes "
                               "and add their paths in Kafka bridge config manually.~n~n",
                               [Filename]),
                     <<>>
@@ -1880,7 +1880,7 @@ maybe_warn_not_supported(ResourceDesc, Key, Val, Supported) ->
             ok;
         false ->
             io:format("[WARNING] Resource: \"~s\" has field: \"~s\"=\"~s\", which is not supported "
-                      "in EMQX 5.1~n~n",
+                      "in EMQX 5.1 or later~n~n",
                       [ResourceDesc, Key, Val])
     end.
 
