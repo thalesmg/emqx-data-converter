@@ -629,7 +629,7 @@ redis_authn(AuthnCmd, SuperCmd, PasswHash, Conf) ->
         AuthnCmd1 -> Conf#{<<"cmd">> => convert_placeholders(AuthnCmd1),
                            <<"mechanism">> => <<"password_based">>,
                            <<"backend">> => <<"redis">>,
-                           <<"password_hash_algorithm">> => convert_passw_hash(PasswHash)
+                           <<"password_hash_algorithm">> => convert_passw_hash("Redis", PasswHash)
                           }
     end.
 
@@ -750,7 +750,7 @@ sql_authn(Type, AuthnQuery, SuperQuery, PasswHash, Conf) ->
     Conf#{<<"query">> => Query,
           <<"mechanism">> => <<"password_based">>,
           <<"backend">> => bin(string:lowercase(Type)),
-          <<"password_hash_algorithm">> => convert_passw_hash(PasswHash)}.
+          <<"password_hash_algorithm">> => convert_passw_hash(Type, PasswHash)}.
 
 sql_authz(_Type, <<>> = _AclQuery, _Conf) ->
     undefined;
@@ -878,7 +878,7 @@ mongo_authn(InConf, OutMongoConf) ->
             AuthnConf =
                 OutMongoConf#{<<"backend">> => <<"mongodb">>,
                               <<"mechanism">> => <<"password_based">>,
-                              <<"password_hash_algorithm">> => convert_passw_hash(PasswHash),
+                              <<"password_hash_algorithm">> => convert_passw_hash("MongoDB", PasswHash),
                               <<"collection">> => Collection,
                               <<"filter">> => convert_mongo_selector(Selector)},
             AuthnConf1 = maybe_add_mongo_superuser(InConf, Collection, AuthnConf),
@@ -1238,17 +1238,23 @@ convert_placeholders(Str, Placeholders) ->
       Str,
       Placeholders).
 
-convert_passw_hash(PassHash) ->
+convert_passw_hash(AuthnName, PassHash) ->
     case binary:split(PassHash, <<",">>) of
         [<<"salt">>, HashFunName] ->
-            hash_algoritm(<<"prefix">>, HashFunName);
+            hash_algoritm(<<"prefix">>, HashFunName, PassHash, AuthnName);
         [HashFunName, <<"salt">>] ->
-            hash_algoritm(<<"suffix">>, HashFunName);
+            hash_algoritm(<<"suffix">>, HashFunName, PassHash, AuthnName);
         [HashFunName] ->
-            hash_algoritm(<<"disable">>, HashFunName)
+            hash_algoritm(<<"disable">>, HashFunName, PassHash, AuthnName)
     end.
 
-hash_algoritm(SaltPos, HashFunName) ->
+hash_algoritm(_SaltPos, <<"bcrypt">>, PassHash, AuthnName) ->
+    io:format("[WARNING] ~s authentication configuration defines bcrypt hash algorithm with salt: \"~s\". "
+              "EMQX 5.1 and later ignores salt field stored in external DB for bcrypt and expects the salt to be "
+              "a part of password hash field value, as it is usually included in the bcrypt hash-string.~n~n",
+              [AuthnName, PassHash]),
+    #{<<"name">> => <<"bcrypt">>};
+hash_algoritm(SaltPos, HashFunName, _PassHash, _AuthnName) ->
     #{<<"name">> => HashFunName,
       <<"salt_position">> => SaltPos}.
 
