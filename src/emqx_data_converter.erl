@@ -1179,7 +1179,7 @@ convert_acl_rules(IsEnabled, AclRulesBin, Opts) ->
         {ok, AclRules0} = file:consult(TmpFile),
         AclRules = lists:map(
                      fun({Permission, Who, Action, Topics}) ->
-                             Rule = {Permission, Who, convert_action(Action), convert_topics(Topics)},
+                             Rule = {Permission, Who, convert_access_type(Action), convert_topics(Topics)},
                              io_lib:format("~p.~n~n", [Rule]);
                         (AllRule) ->
                              io_lib:format("~p.~n~n", [AllRule])
@@ -1198,9 +1198,9 @@ convert_acl_rules(IsEnabled, AclRulesBin, Opts) ->
         file:delete(TmpFile)
     end.
 
-convert_action(subscribe) -> subscribe;
-convert_action(publish) -> publish;
-convert_action(pubsub) -> all.
+convert_access_type(subscribe) -> subscribe;
+convert_access_type(publish) -> publish;
+convert_access_type(pubsub) -> all.
 
 convert_topics(Topics) when is_list(Topics) ->
     [convert_topic(T) || T <- Topics];
@@ -1306,70 +1306,90 @@ local_datetime(MillisecondTs) ->
 convert_rules_resources(InputMap, OutRawConf) ->
     Rules = maps:get(<<"rules">>, InputMap, []),
     Resources = maps:get(<<"resources">>, InputMap, []),
-    {OutRules, Bridges} =
+    {OutRules, OutActions, OutConnectors} =
         lists:foldl(
-          fun(Rule, {RulesAcc, BridgesAcc}) ->
-                  {{OutRuleId, OutRule}, BridgesAcc1} = convert_rule(Rule, Resources, BridgesAcc),
-                  {RulesAcc#{OutRuleId => OutRule}, BridgesAcc1}
+          fun(Rule, {RulesAcc, ActionsAcc, ConnectorsAcc}) ->
+                  {{OutRuleId, OutRule}, ActionsAcc1, ConnectorsAcc1}
+                        = convert_rule(Rule, Resources, ActionsAcc, ConnectorsAcc),
+                  {RulesAcc#{OutRuleId => OutRule}, ActionsAcc1, ConnectorsAcc1}
           end,
-          {#{}, #{}},
+          {#{}, #{}, #{}},
           Rules),
     %% TODO convert resources not bound to any actions, but it may be possible only for a subset of
     %% EMQX 5.1 or later bridges that don't require a CMD
-    OutRawConf#{<<"rule_engine">> => #{<<"rules">> => OutRules}, <<"bridges">> => Bridges}.
+    OutRawConf#{
+        <<"rule_engine">> => #{
+            <<"rules">> => OutRules
+        },
+        <<"actions">> => OutActions,
+        <<"connectors">> => OutConnectors
+    }.
 
-convert_rule(Rule, Resources, Bridges) ->
+convert_rule(Rule, Resources, ActionsIn, ConnectorsIn) ->
     #{<<"id">> := Id, <<"rawsql">> := SQL, <<"enabled">> := IsEnabled,
       <<"description">> := Desc, <<"actions">> := Actions} = Rule,
-    {OutActions, OutBridges} =
+    {OutActionIds, OutActions, OutConnectors} =
         lists:foldr(
-          fun(Action, {ActionsAcc, BridgesAcc}) ->
-                  case convert_action(Action, Resources) of
-                      {OutAction, {BrType, BrName, BrConf}} ->
-                          ActionsAcc1 = [OutAction | ActionsAcc],
-                          BridgesAcc1 = maps:update_with(
-                                          BrType,
-                                          fun(BrsByType) -> BrsByType#{BrName => BrConf} end,
-                                          #{BrName => BrConf},
-                                          BridgesAcc
-                                         ),
-                          {ActionsAcc1, BridgesAcc1};
+          fun(Action, {ActionIdsAcc, ActionsAcc, ConnectorsAcc}) ->
+                  case convert_action_resource(Action, Resources) of
+                      {OutActionId, OutAction, OutConnector} ->
+                          ActionsIdsAcc1 = [OutActionId | ActionIdsAcc],
+                          ActionsAcc1 = add_config_by_type_name(OutAction, ActionsAcc),
+                          ConnectorsAcc1 = add_config_by_type_name(OutConnector, ConnectorsAcc),
+                          {ActionsIdsAcc1, ActionsAcc1, ConnectorsAcc1};
                       undefined ->
-                          {ActionsAcc, BridgesAcc}
+                          {ActionIdsAcc, ActionsAcc, ConnectorsAcc}
                   end
           end,
-          {[], Bridges},
+          {[], ActionsIn, ConnectorsIn},
           Actions),
     Id1 = binary:replace(Id, <<":">>, <<"_">>, [global]),
-    OutRule =  {Id1, #{<<"sql">> => SQL,
+    OutRule = {Id1, #{<<"sql">> => SQL,
                       <<"enable">> => IsEnabled,
                       <<"description">> => Desc,
-                      <<"actions">> => OutActions}},
-    {OutRule, OutBridges}.
+                      <<"actions">> => OutActionIds}},
+    {OutRule, OutActions, OutConnectors}.
 
-convert_action(#{<<"name">> := Name, <<"id">> := Id,
-                 <<"args">> := #{<<"$resource">> := ResId} = Args} = _Action,
+convert_action_resource(#{<<"name">> := Name, <<"id">> := Id,
+                 <<"args">> := #{<<"$resource">> := ResId} = ActArgs} = _Action,
                Resources) ->
     %% NOTE: EMQX 4.4 fallbacks are ignored, log them if they are not empty?
     case resource_by_id(ResId, Resources, Id) of
-        #{<<"id">> := ResId, <<"type">> := ResType, <<"config">> := ResConf} ->
-            Bridge = action_resource_to_bridge(Name, Id, Args, ResId, ResType, ResConf),
-            case Bridge of
-                {BridgeType, BridgeName, _BridgeConf} ->
-                    OutAction = <<BridgeType/binary, ":", BridgeName/binary>>,
-                    {OutAction, Bridge};
+        #{<<"id">> := ResId, <<"type">> := ResType, <<"config">> := ResConf} = ResParams ->
+            case do_convert_action_resource(Name, Id, ActArgs, ResId, ResType, ResConf) of
+                {{ActType, ActName, ActConf}, {ConnType, ConnName, ConnConf}} ->
+                    OutActionId = <<ActType/binary, ":", ActName/binary>>,
+                    {OutActionId,
+                        {ActType, ActName, with_common_action_fields(ActArgs, ActConf, ConnName)}, 
+                        {ConnType, ConnName, with_common_connnector_fields(ResParams, ConnConf)}};
                 undefined -> undefined
             end;
         undefined -> undefined
     end.
 
+with_common_action_fields(ActArgs, ActConf, ConnName) ->
+    filter_out_empty(
+        #{
+            <<"description">> => maps:get(<<"description">>, ActArgs, <<>>),
+            <<"tags">> => maps:get(<<"tag">>, ActArgs, <<>>),
+            <<"connector">> => ConnName,
+            <<"parameters">> => ActConf
+        }).
+
+with_common_connnector_fields(ResParams, ConnConf) ->
+    filter_out_empty(
+        ConnConf#{
+            <<"description">> => maps:get(<<"description">>, ResParams, <<>>),
+            <<"tags">> => maps:get(<<"tag">>, ResParams, <<>>)
+        }).
+
 -define(DATA_ACTION, <<"data_to_", _/binary>>).
 
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
                           <<"backend_redis_", RedisType/binary>>, ResConf) ->
     #{<<"cmd">> := Cmd} = Args,
     redis_bridge(ActId, Cmd, ResId, RedisType, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS/binary>>, ResConf)
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS/binary>>, ResConf)
   when RDBMS =:= <<"pgsql">>;
        RDBMS =:= <<"mysql">>;
        RDBMS =:= <<"sqlserver">>;
@@ -1377,42 +1397,42 @@ action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS/
        RDBMS =:= <<"matrix">>;
        RDBMS =:= <<"timescale">> ->
     sql_bridge(RDBMS, ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
                           <<"backend_mongo_", MongoType/binary>>, ResConf) ->
     #{<<"payload_tmpl">> := PayloadTmpl, <<"collection">> := Collection} = Args,
     mongodb_bridge(ActId, PayloadTmpl, Collection, ResId, MongoType, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
     cassandra_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
     clickhouse_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
     #{<<"table">> := Table} = Args,
     dynamo_bridge(ActId, Table, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
     hstreamdb_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId,
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
                           <<"backend_influxdb_http", InfluxVer/binary>>, ResConf) ->
     io:format("[WARNING] EMQX 5.1 or later InfluxDB bridge has no \"int_suffix\" alternative.~n"
               "If needed, please add necessary suffixes manually to EMQX 5.1 or later \"write_syntax\"~n~n",
               []),
     influxdb_bridge(ActId, Args, InfluxVer, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
     opentsdb_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
     tdengine_bridge(ActId, Args, ResId, ResConf);
-%%action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"backend_iotdb">>, ResConf) ->
+%%do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_iotdb">>, ResConf) ->
 %%    %% TODO: looks like it may need rewriting rule sql to port it to EMQX5.1
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, ResConf) ->
     webhook_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
     pulsar_producer_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
     rabbit_producer_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
     rocket_producer_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(?DATA_ACTION, ActId, Args, ResId, <<"bridge_kafka">>, ResConf) ->
-    kafka_producer_bridge(ActId, Args, ResId, ResConf);
-action_resource_to_bridge(Action, _ActId, _Args, _ResId, ResType, _ResConf) ->
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_kafka">>, ResConf) ->
+    kafka_action_resource(ActId, Args, ResId, ResConf);
+do_convert_action_resource(Action, _ActId, _Args, _ResId, ResType, _ResConf) ->
     io:format("[WARNING] EMQX 4.4 action: ~s and/or resource: ~p are not supported by EMQX 5.1 or later "
               "and will be skipped.~n~n",
               [Action, ResType]),
@@ -1428,6 +1448,18 @@ resource_by_id(ResId, Resources, ActionId) ->
                       " in the input file.~n", [ResId, ActionId]),
             undefined
     end.
+
+make_action_name(ResourceId) ->
+    make_bridge_name(ResourceId, <<"action_">>).
+make_connector_name(ResourceId) ->
+    make_bridge_name(ResourceId, <<"connector_">>).
+make_bridge_name(ResourceId, Prefix) ->
+    ResourceId1 = case string:prefix(ResourceId, <<"resource:">>) of
+                      nomatch -> ResourceId;
+                      Id -> Id
+                  end,
+    ResourceId2 = binary:replace(ResourceId1, <<":">>, <<"_">>, [global]),
+    <<Prefix/binary, ResourceId2/binary>>.
 
 %% Use action ID + resouce ID as bridge name, since the same resource can be reused in different
 %% actions (with different CMDs) in EMQX 4.4 while CMD is a part of a bridge in EMQX 5.1 or later
@@ -1703,9 +1735,9 @@ pulsar_producer_bridge(ActionId, #{<<"topic">> := Topic} = Args, ResId, #{<<"ser
 %% Pulsar, Kafka producer
 key_to_template(<<"none">>) -> <<>>;
 %% TODO: what if the rule doesn't select it?
-key_to_template(<<"topic">>) -> <<"${topic}">>;
-key_to_template(<<"clientid">>) -> <<"${clientid}">>;
-key_to_template(<<"username">>) -> <<"${username}">>;
+key_to_template(<<"topic">>) -> <<"${.topic}">>;
+key_to_template(<<"clientid">>) -> <<"${.clientid}">>;
+key_to_template(<<"username">>) -> <<"${.username}">>;
 key_to_template(Other) -> Other.
 
 buffer_mode(<<"Memory">>) -> <<"memory">>;
@@ -1753,7 +1785,7 @@ rocket_producer_bridge(ActionId, Args, ResId, ResConf) ->
                         <<"template">> => maps:get(<<"payload_tmpl">>, Args, <<>>)},
     {<<"rocketmq">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
-kafka_producer_bridge(ActionId, Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
+kafka_action_resource(_ActionId, Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
     Strategy = case maps:get(<<"strategy">>, Args, <<>>) of
                    <<"roundrobin">> ->
                        io:format("[WARNING] Round-robin partition strategy is not supported by Kafka producer "
@@ -1773,13 +1805,7 @@ kafka_producer_bridge(ActionId, Args, ResId, #{<<"servers">> := Servers} = ResCo
                           <<"topic">>,
                           <<"partition_count_refresh_interval">>,
                           <<"kafka_headers">>],
-    %% Looks like there are no alternatives for:
-    %%     "batch_time",
-    %%     "batch_size",
-    %%     "batch_keep_msg_order",
-    %%     "batch_drop_factor"
-    %% in EMQX 5.1 or later.
-    %% Moreover, in EMQX 4.4.10 the above were renamed to:
+    %% Drop the following fields as they are for 4.4 only:
     %%     "message_accumulation_interval",
     %%     "message_accumulation_size",
     %%     "message_accumulation_keep_msg_order",
@@ -1793,7 +1819,7 @@ kafka_producer_bridge(ActionId, Args, ResId, #{<<"servers">> := Servers} = ResCo
                   ),
     KafkaOpts = maps:with(CommonKafkaArgOpts, Args),
     HeaderEncodeMode = string:lowercase(maps:get(<<"kafka_header_value_encode_mode">>, Args, <<>>)),
-    KafkaOpts1 = filter_out_empty(
+    ActionConf = filter_out_empty(
                    KafkaOpts#{<<"compression">> => maps:get(<<"compression">>, ResConf, <<>>),
                               <<"sync_query_timeout">> => maps:get(<<"sync_timeout">>, ResConf, <<>>),
                               <<"max_batch_bytes">> => maps:get(<<"max_batch_bytes">>, ResConf, <<>>),
@@ -1812,15 +1838,16 @@ kafka_producer_bridge(ActionId, Args, ResId, #{<<"servers">> := Servers} = ResCo
                    #{<<"sndbuf">> => maps:get(<<"send_buffer">>, ResConf, <<>>),
                      <<"tcp_keepalive">> => keepalive(maps:get(<<"tcp_keepalive">>, ResConf, <<>>))}
                   ),
-    OutConf = #{<<"bootstrap_hosts">> => Servers,
+    ConnConf = #{<<"bootstrap_hosts">> => Servers,
                 <<"ssl">> => convert_ssl_opts(ResConf),
                 <<"authentication">> => kafka_auth(ResConf),
                 <<"min_metadata_refresh_interval">> =>
                     maps:get(<<"min_metadata_refresh_interval">>, ResConf, <<>>),
-                <<"kafka">> => KafkaOpts1,
                 <<"socket_opts">> => SocketOpts
                },
-    {<<"kafka">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf)}.
+    Action = {<<"kafka_producer">>, make_action_name(ResId), filter_out_empty(ActionConf)},
+    Connector = {<<"kafka_producer">>, make_connector_name(ResId), filter_out_empty(ConnConf)},
+    {Action, Connector}.
 
 keepalive(<<>>) ->
     <<>>;
@@ -1893,3 +1920,7 @@ maybe_enable_ssl_opts(#{<<"verify">> := <<"verify_peer">>} = Opts) ->
     Opts#{<<"enable">> => true};
 maybe_enable_ssl_opts(Opts) ->
     Opts.
+
+add_config_by_type_name({Type, Name, Conf}, MapIn) ->
+    UpdateFun = fun(ConfByType) -> ConfByType#{Name => Conf} end,
+    maps:update_with(Type, UpdateFun, #{Name => Conf}, MapIn).
