@@ -1258,6 +1258,20 @@ hash_algoritm(SaltPos, HashFunName, _PassHash, _AuthnName) ->
     #{<<"name">> => HashFunName,
       <<"salt_position">> => SaltPos}.
 
+ssl_opts(IsEnabled, InConf) ->
+    SSL = convert_ssl_files(InConf, #{<<"enable">> => IsEnabled}),
+    Verify = case maps:get(<<"verify">>, InConf, false) of
+                 true -> <<"verify_peer">>;
+                 false -> <<"verify_none">>
+             end,
+    SNI = maps:get(<<"server_name_indication">>, InConf, <<>>),
+    SSL1 = put_unless_empty(<<"server_name_indication">>, SNI, SSL#{<<"verify">> => Verify}),
+    %% Available only for InfluxDB
+    case InConf of
+        #{<<"tls_version">> := TLSVersion} ->
+            SSL1#{<<"versions">> => [TLSVersion]};
+        _-> SSL1
+    end.
 convert_ssl_opts(InConf) ->
     IsEnabled = maps:get(<<"ssl">>, InConf, false),
     SSL = convert_ssl_files(InConf, #{<<"enable">> => IsEnabled}),
@@ -1354,7 +1368,7 @@ convert_action_resource(#{<<"name">> := Name, <<"id">> := Id,
                  <<"args">> := #{<<"$resource">> := ResId} = ActArgs} = _Action,
                Resources) ->
     %% NOTE: EMQX 4.4 fallbacks are ignored, log them if they are not empty?
-    case resource_by_id(ResId, Resources, Id) of
+    case resource_by_id(ResId, Resources) of
         #{<<"id">> := ResId, <<"type">> := ResType, <<"config">> := ResConf} = ResParams ->
             case do_convert_action_resource(Name, Id, ActArgs, ResId, ResType, ResConf) of
                 {{ActType, ActName, ActConf}, {ConnType, ConnName, ConnConf}} ->
@@ -1362,18 +1376,25 @@ convert_action_resource(#{<<"name">> := Name, <<"id">> := Id,
                     {OutActionId,
                         {ActType, ActName, with_common_action_fields(ActArgs, ActConf, ConnName)}, 
                         {ConnType, ConnName, with_common_connnector_fields(ResParams, ConnConf)}};
-                undefined -> undefined
+                undefined ->
+                    undefined
             end;
-        undefined -> undefined
-    end.
+        undefined ->
+            %% drop actions that have bad resource links
+            io:format("[WARNING] Skipping rule action \"~s\", as the resource \"~s\" it referenced is missing in the input file.~n", [Id, ResId]),
+            undefined
+    end;
+convert_action_resource(#{<<"name">> := _Name, <<"id">> := _Id, <<"args">> := _ActArgs} = _Action,
+               _Resources) ->
+    io:format("[ERROR] conversion for standalone actions are not implemented yet~n~n"),
+    error.
 
 with_common_action_fields(ActArgs, ActConf, ConnName) ->
     filter_out_empty(
-        #{
+        ActConf#{
             <<"description">> => maps:get(<<"description">>, ActArgs, <<>>),
             <<"tags">> => maps:get(<<"tag">>, ActArgs, <<>>),
-            <<"connector">> => ConnName,
-            <<"parameters">> => ActConf
+            <<"connector">> => ConnName
         }).
 
 with_common_connnector_fields(ResParams, ConnConf) ->
@@ -1423,7 +1444,7 @@ do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_tdengine
 %%do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_iotdb">>, ResConf) ->
 %%    %% TODO: looks like it may need rewriting rule sql to port it to EMQX5.1
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, ResConf) ->
-    webhook_bridge(ActId, Args, ResId, ResConf);
+    webhook_action_resource(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
     pulsar_producer_bridge(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
@@ -1432,20 +1453,22 @@ do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>
     rocket_producer_bridge(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_kafka">>, ResConf) ->
     kafka_action_resource(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_gcp_pubsub">>, ResConf) ->
+    gcp_pubsub_action_resource(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_mqtt">>, ResConf) ->
+    mqtt_action_resource(ActId, Args, ResId, ResConf);
 do_convert_action_resource(Action, _ActId, _Args, _ResId, ResType, _ResConf) ->
     io:format("[WARNING] EMQX 4.4 action: ~s and/or resource: ~p are not supported by EMQX 5.1 or later "
               "and will be skipped.~n~n",
               [Action, ResType]),
     undefined.
 
-%% Dashboard doesn't allow creating an action without resource, this function must must be safe
+%% Dashboard doesn't allow creating an action without resource, this function must be safe
 %% to use with a valid input file
-resource_by_id(ResId, Resources, ActionId) ->
+resource_by_id(ResId, Resources) ->
     case lists:filter(fun(#{<<"id">> := Id}) -> Id =:= ResId end, Resources) of
         [Resource] -> Resource;
         [] ->
-            io:format("[WARNING] Resource \"~s\" referenced in rule action \"~s\" is missing"
-                      " in the input file.~n", [ResId, ActionId]),
             undefined
     end.
 
@@ -1479,9 +1502,12 @@ common_args_to_res_opts(Args) ->
     Mode = maps:get(<<"insert_mode">>, Args, <<"async">>),
     ResOpts = #{<<"query_mode">> => Mode},
     case Args of
-        #{<<"enable_batch">> := true, <<"batch_size">> := BatchSize} when BatchSize =/= <<>> ->
+        #{<<"enable_batch">> := true, <<"batch_size">> := BatchSize} = Conf when BatchSize =/= <<>> ->
             %% batch_time is not converted as it's hidden in EMQX 5
-            ResOpts#{<<"batch_size">> => BatchSize};
+            ResOpts#{
+                <<"batch_size">> => BatchSize,
+                <<"batch_time">> => maps:get(<<"batch_time">>, Conf, <<"10ms">>)
+            };
         _ ->
             ResOpts
     end.
@@ -1499,8 +1525,7 @@ redis_bridge(ActionId, Cmd, ResId, RedisType, ResConf) ->
                          <<"ssl">> => convert_ssl_opts(ResConf)},
     {<<"redis_", RedisType/binary>>, BridgeName, OutConf2}.
 
-sql_bridge(RDBMS, ActionId, #{<<"sql">> := SQL} = Args, ResId, ResConf) ->
-    BridgeName = bridge_name(ResId, ActionId),
+sql_bridge(RDBMS, _ActionId, #{<<"sql">> := SQL} = Args, ResId, ResConf) ->
     ResConf1 = case ResConf of
                    %% MySQL and Oracle
                    #{<<"user">> := Username} -> ResConf#{<<"username">> => Username};
@@ -1515,10 +1540,15 @@ sql_bridge(RDBMS, ActionId, #{<<"sql">> := SQL} = Args, ResId, ResConf) ->
                     <<"sid">>, %% oracle
                     <<"service_name">> %% oracle
                    ],
-    OutConf = filter_out_empty(maps:with(CommonFields, ResConf1)),
-    OutConf1 = OutConf#{<<"sql">> => SQL, <<"resource_opts">> => common_args_to_res_opts(Args)},
-    OutConf2 = maybe_add_ssl_sql(RDBMS, OutConf1, ResConf1),
-    {RDBMS, BridgeName, OutConf2}.
+    ActionConfs = #{
+        <<"parameters">> => #{<<"sql">> => SQL},
+        <<"resource_opts">> => common_args_to_res_opts(Args)
+    },
+    OutConnConf = filter_out_empty(maps:with(CommonFields, ResConf1)),
+    OutConnConf1 = maybe_add_ssl_sql(RDBMS, OutConnConf, ResConf1),
+    Connector = {RDBMS, make_connector_name(ResId), OutConnConf1},
+    Action = {RDBMS, make_action_name(ResId), ActionConfs},
+    {Action, Connector}.
 
 maybe_add_ssl_sql(RDBMS, OutConf, _ResConf) when RDBMS =:= <<"oracle">>;
                                                  RDBMS =:= <<"sqlserver">> ->
@@ -1675,25 +1705,34 @@ tdengine_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"host">> := H, 
                         <<"resource_opts">> => common_args_to_res_opts(Args)},
     {<<"tdengine">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
-webhook_bridge(ActionId, #{<<"method">> := Method} = Args, ResId, #{<<"url">> := URL} = ResConf) ->
+webhook_action_resource(_ActionId, #{<<"method">> := Method} = Args, ResId, #{<<"url">> := URL} = ResConf) ->
     Headers = maps:get(<<"headers">>, Args, #{}),
     Body = maps:get(<<"body">>, Args, <<>>),
     Path = maps:get(<<"path">>, Args, <<>>),
-    URL1 = <<(string:trim(URL, trailing, "/"))/binary, "/", (string:trim(Path, leading, "/"))/binary>>,
+    ActionConn = #{
+        <<"parameters">> => filter_out_empty(#{
+            <<"method">> => string:lowercase(Method),
+            <<"headers">> => Headers,
+            <<"body">> => Body,
+            <<"path">> => Path,
+            <<"request_timeout">> => maps:get(<<"request_timeout">>, ResConf, <<"5s">>)
+        })
+    },
     CommonFields = [<<"connect_timeout">>, <<"pool_size">>],
-    OutConf = maps:with(CommonFields, ResConf),
+    ConnConf = maps:with(CommonFields, ResConf),
     Pipelining = case maps:get(<<"enable_pipelining">>, ResConf, false) of
                      false -> 1;
                      %% Default EMQX 5.1 or later value
                      true -> 100
                  end,
-    OutConf1 = OutConf#{<<"url">> => URL1,
-                        <<"ssl">> => maybe_enable_ssl_opts(convert_ssl_opts(ResConf)),
-                        <<"headers">> => Headers,
-                        <<"body">> => Body,
-                        <<"enable_pipelining">> => Pipelining,
-                        <<"method">> => string:lowercase(Method)},
-    {<<"webhook">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf1 = ConnConf#{
+        <<"url">> => URL,
+        <<"enable_pipelining">> => Pipelining,
+        <<"ssl">> => maybe_enable_ssl_opts(convert_ssl_opts(ResConf))
+    },
+    Action = {<<"http">>, make_action_name(ResId), ActionConn},
+    Connector = {<<"http">>, make_connector_name(ResId), filter_out_empty(ConnConf1)},
+    {Action, Connector}.
 
 pulsar_producer_bridge(ActionId, #{<<"topic">> := Topic} = Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
     Authn = case maps:get(<<"authentication_type">>, ResConf, <<>>) of
@@ -1733,7 +1772,7 @@ pulsar_producer_bridge(ActionId, #{<<"topic">> := Topic} = Args, ResId, #{<<"ser
     {<<"pulsar_producer">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
 %% Pulsar, Kafka producer
-key_to_template(<<"none">>) -> <<>>;
+key_to_template(<<"none">>) -> '$absent';
 %% TODO: what if the rule doesn't select it?
 key_to_template(<<"topic">>) -> <<"${.topic}">>;
 key_to_template(<<"clientid">>) -> <<"${.clientid}">>;
@@ -1743,7 +1782,7 @@ key_to_template(Other) -> Other.
 buffer_mode(<<"Memory">>) -> <<"memory">>;
 buffer_mode(<<"Disk">>) -> <<"disk">>;
 buffer_mode(<<"Memory+Disk">>) -> <<"hybrid">>;
-buffer_mode(<<>>) -> <<>>.
+buffer_mode(<<>>) -> '$absent'.
 
 rabbit_producer_bridge(ActionId, Args, ResId, #{<<"server">> := Server} = ResConf) ->
     {Host, Port} = case binary:split(Server, <<":">>) of
@@ -1785,83 +1824,112 @@ rocket_producer_bridge(ActionId, Args, ResId, ResConf) ->
                         <<"template">> => maps:get(<<"payload_tmpl">>, Args, <<>>)},
     {<<"rocketmq">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
-kafka_action_resource(_ActionId, Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
-    Strategy = case maps:get(<<"strategy">>, Args, <<>>) of
-                   <<"roundrobin">> ->
-                       io:format("[WARNING] Round-robin partition strategy is not supported by Kafka producer "
-                                 "bridge in EMQX 5.1 or later. It will use \"random\" strategy by default.~n~n",
-                                 []),
-                       <<>>;
-                   S -> S
-               end,
-    KafkaBuffer = filter_out_empty(
-                    #{<<"segment_bytes">> => maps:get(<<"segments_bytes">>, Args, <<>>),
-                      <<"mode">> => buffer_mode(maps:get(<<"cache_mode">>, Args, <<>>)),
-                      <<"memory_overload_protection">> => maps:get(<<"highmem_drop">>, Args, <<>>),
-                      <<"per_partition_limit">> => maps:get(<<"max_total_bytes">>, Args, <<>>)
-                     }
-                   ),
-    CommonKafkaArgOpts = [<<"required_acks">>,
-                          <<"topic">>,
-                          <<"partition_count_refresh_interval">>,
-                          <<"kafka_headers">>],
-    %% Drop the following fields as they are for 4.4 only:
+kafka_action_resource(_ActionId, Args, ResId, ResConf) ->
+    ConnectorType = <<"kafka_producer">>,
+    ConvertStrategy = fun
+        (<<"roundrobin">>) ->
+            io:format("[WARNING] Round-robin partition strategy is not supported by Kafka producer "
+                      "bridge in EMQX 5.1 or later. It will use \"random\" strategy by default.~n~n"),
+            <<"random">>;
+        (S) -> S
+    end,
+    ConvertKafkaExtHeaders = fun(OldHeaders) ->
+        lists:map(fun(#{<<"key">> := Key, <<"value">> := Val}) ->
+            #{<<"kafka_ext_header_key">> => Key, <<"kafka_ext_header_value">> => Val}
+        end, OldHeaders)
+    end,
+    ConvertTcpKeepalive = fun
+        (<<>>) -> '$absent';
+        (Val) ->
+            case hocon_postprocess:duration(Val) of
+                0 -> '$absent';
+                I when is_integer(I) ->
+                    ISecBin = integer_to_binary(ceiling(I / 1000)),
+                    %% Default probes is 3, see 4.4 emqx_bridge_kafka_actions.erl: tcp_keepalive/1
+                    <<ISecBin/binary, ",", ISecBin/binary, ",3">>;
+                _ -> '$absent'
+            end
+    end,
+    %% Drop the following fields as they are for 4.4 only, drop them silently:
     %%     "message_accumulation_interval",
     %%     "message_accumulation_size",
     %%     "message_accumulation_keep_msg_order",
     %%     "message_accumulation_drop_factor"
-    ExtHeaders = lists:map(
-                   fun(#{<<"key">> := Key, <<"value">> := Val}) ->
-                           #{<<"kafka_ext_header_key">> => Key,
-                             <<"kafka_ext_header_value">> => Val}
-                   end,
-                   maps:get(<<"kafka_ext_headers">>, Args, [])
-                  ),
-    KafkaOpts = maps:with(CommonKafkaArgOpts, Args),
-    HeaderEncodeMode = string:lowercase(maps:get(<<"kafka_header_value_encode_mode">>, Args, <<>>)),
-    ActionConf = filter_out_empty(
-                   KafkaOpts#{<<"compression">> => maps:get(<<"compression">>, ResConf, <<>>),
-                              <<"sync_query_timeout">> => maps:get(<<"sync_timeout">>, ResConf, <<>>),
-                              <<"max_batch_bytes">> => maps:get(<<"max_batch_bytes">>, ResConf, <<>>),
-                              <<"query_mode">> => maps:get(<<"type">>, Args, <<>>),
-                              <<"partition_strategy">> => Strategy,
-                              <<"buffer">> => KafkaBuffer,
-                              <<"message">> =>
-                                  filter_out_empty(
-                                    #{<<"key">> => key_to_template(maps:get(<<"key">>, Args, <<>>)),
-                                      <<"value">> => maps:get(<<"payload_tmpl">>, Args, <<>>)
-                                     }),
-                              <<"kafka_header_value_encode_mode">> => HeaderEncodeMode,
-                              <<"kafka_ext_headers">> => ExtHeaders
-                             }),
-    SocketOpts = filter_out_empty(
-                   #{<<"sndbuf">> => maps:get(<<"send_buffer">>, ResConf, <<>>),
-                     <<"tcp_keepalive">> => keepalive(maps:get(<<"tcp_keepalive">>, ResConf, <<>>))}
-                  ),
-    ConnConf = #{<<"bootstrap_hosts">> => Servers,
-                <<"ssl">> => convert_ssl_opts(ResConf),
-                <<"authentication">> => kafka_auth(ResConf),
-                <<"min_metadata_refresh_interval">> =>
-                    maps:get(<<"min_metadata_refresh_interval">>, ResConf, <<>>),
-                <<"socket_opts">> => SocketOpts
-               },
-    Action = {<<"kafka_producer">>, make_action_name(ResId), filter_out_empty(ActionConf)},
-    Connector = {<<"kafka_producer">>, make_connector_name(ResId), filter_out_empty(ConnConf)},
+    ActionParams = convert_action_resource_fields(
+        [ {required_acks, {<<"required_acks">>, <<"all_isr">>}}
+        , {topic, {<<"topic">>, '$required'}}
+        , {partition_count_refresh_interval, {<<"partition_count_refresh_interval">>, <<"60s">>}}
+        , {kafka_headers, {<<"kafka_headers">>, '$absent'}}
+        , {compression, {<<"compression">>, <<"no_compression">>}}
+        , {sync_query_timeout, {<<"sync_timeout">>, <<"3s">>}}
+        , {max_batch_bytes, {<<"max_batch_bytes">>, <<"900KB">>}}
+        , {query_mode, {<<"type">>, <<"async">>}}
+        , {partition_strategy, {<<"strategy">>, <<"random">>, ConvertStrategy}}
+        , {kafka_header_value_encode_mode,
+            {<<"kafka_header_value_encode_mode">>, <<"NONE">>, fun string:lowercase/1}}
+        , {kafka_ext_headers, {<<"kafka_ext_headers">>, [], ConvertKafkaExtHeaders}}
+        , {buffer, {'$spec',
+            [ {segment_bytes, {<<"segments_bytes">>, <<"100MB">>}}
+            , {mode, {<<"cache_mode">>, <<"Memory">>, fun buffer_mode/1}}
+            , {memory_overload_protection, {<<"highmem_drop">>, <<"false">>}}
+            , {per_partition_limit, {<<"max_total_bytes">>, <<"2GB">>}}
+            ]}}
+        , {message, {'$spec',
+            [ {key, {<<"key">>, <<"none">>, fun key_to_template/1}}
+            , {value, {<<"payload_tmpl">>, <<>>, fun convert_payload_tmpl/1}}
+            ]}}
+        ], Args, ResConf),
+    ConnConf = convert_action_resource_fields(
+        [ {bootstrap_hosts, {<<"servers">>, '$required'}}
+        , {authentication, {<<"authentication_mechanism">>, not_found, fun kafka_auth/2}}
+        , {min_metadata_refresh_interval, {<<"min_metadata_refresh_interval">>, <<"3s">>}}
+        , {ssl, {<<"ssl">>, false, fun ssl_opts/2}}
+        , {socket_opts,
+            {'$spec',
+                [ {sndbuf, {<<"send_buffer">>, <<"1024KB">>}}
+                , {tcp_keepalive, {<<"tcp_keepalive">>, <<"0s">>, ConvertTcpKeepalive}}
+                ]}}
+        ], Args, ResConf),
+    Action = {ConnectorType, make_action_name(ResId), #{<<"parameters">> => ActionParams}},
+    Connector = {ConnectorType, make_connector_name(ResId), ConnConf},
     {Action, Connector}.
 
-keepalive(<<>>) ->
-    <<>>;
-keepalive(Val) ->
-    case hocon_postprocess:duration(Val) of
-        0 -> <<>>;
-        I when is_integer(I) ->
-            ISecBin = integer_to_binary(ceiling(I / 1000)),
-            %% Default probes is 3, see 4.4 emqx_bridge_kafka_actions.erl: tcp_keepalive/1
-            <<ISecBin/binary, ",", ISecBin/binary, ",3">>;
-        _ ->
-            <<>>
-    end.
+gcp_pubsub_action_resource(_ActionId, Args, ResId, ResConf) ->
+    ConnectorType = <<"gcp_pubsub_producer">>,
+    ConnConfs = convert_action_resource_fields(
+        [ {connect_timeout, {<<"connect_timeout">>, <<"5s">>}}
+        , {request_timeout, {<<"request_timeout">>, <<"5s">>}}
+        , {pool_size, {<<"pool_size">>, 8}}
+        , {pipelining, {<<"pipelining">>, 100}}
+        , {service_account_json, {<<"service_account_json">>, '$required', fun file_content/1}}
+        ], Args, ResConf),
+    ActionParams = convert_action_resource_fields(
+        [ {pubsub_topic, {<<"pubsub_topic">>, '$required'}}
+        , {payload_template, {<<"payload_template">>, <<"${.}">>}}
+        , {attributes_template, {<<"attributes">>, #{}, fun map_to_kv_pairs/1}}
+        , {ordering_key_template, {<<"ordering_key">>, '$absent'}}
+        ], Args, ResConf),
+    ActionResOpts = convert_action_resource_fields(
+        [ {query_mode, {<<"flush_mode">>, <<"sync">>}}
+        , {request_ttl, {<<"sync_timeout">>, <<"5s">>}}
+        , {worker_pool_size, {<<"batch_pool_size">>, 4}}
+        , {batch_size, {<<"batch_size">>, 100}}
+        , {batch_time, {<<"flush_period_ms">>, <<"10ms">>}}
+        ], Args, ResConf),
+    ActionConfs = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => ActionResOpts
+    },
+    Connector = {ConnectorType, make_connector_name(ResId), ConnConfs},
+    Action = {ConnectorType, make_action_name(ResId), ActionConfs},
+    {Action, Connector}.
 
+mqtt_action_resource(_ActionId, _Args, _ResId, _ResConf) ->
+    ok.
+
+%% =============================================================================
+%% Helper functions
+%% =============================================================================
 ceiling(X) ->
     T = erlang:trunc(X),
     case (X - T) of
@@ -1870,33 +1938,38 @@ ceiling(X) ->
         _ -> T
     end.
 
-kafka_auth(ResConf) ->
-    case maps:get(<<"authentication_mechanism">>, ResConf, <<>>) of
-        <<>> -> <<>>;
-        <<"NONE">> -> <<>>;
-        M when M =:= <<"SCRAM_SHA_256">>;
-               M =:= <<"SCRAM_SHA_512">>;
-               M =:= <<"PLAIN">> ->
-            A = maps:with([<<"username">>, <<"password">>], ResConf),
-            A#{<<"mechanism">> => string:lowercase(M)};
-        <<"KERBEROS">> ->
-            #{<<"kerberos_principal">> := Principal} = ResConf,
-            case ResConf of
-                #{<<"kerberos_keytab_path">> := KeyTabPath} ->
-                    io:format("[WARNING] Kafka uses Kerberos authnetication, please make sure that "
-                              "keytab file is copied to EMQX 5, EMQX 4.4 file path: ~s~n~n",
-                              [KeyTabPath]),
-                    #{<<"kerberos_keytab_file">> => KeyTabPath,
-                      <<"kerberos_principal">> => Principal};
-                #{<<"kerberos_keytab">> := #{<<"filename">> := Filename, <<"file">> := _}} ->
-                    io:format("[WARNING] The input file contains Kerberos keytab file \"~s\" content "
-                              "for Kafka bridge authentication, which can't be migrated to EMQX 5.1 or later.~n"
-                              "The bridge config will be migrated without authentication, "
-                              "Please create keytab files on EMQX 5.1 (or later) nodes "
-                              "and add their paths in Kafka bridge config manually.~n~n",
-                              [Filename]),
-                    <<>>
-            end
+kafka_auth(<<"NONE">>, _ResConf) -> <<"none">>;
+kafka_auth(AuthMethod, ResConf) when
+        AuthMethod =:= not_found;
+        AuthMethod =:= <<"PLAIN">> ->
+    case maps:get(<<"username">>, ResConf, <<>>) of
+        <<>> -> <<"none">>;
+        _ ->
+            UserPass = maps:with([<<"username">>, <<"password">>], ResConf),
+            UserPass#{<<"mechanism">> => <<"plain">>}
+    end;
+kafka_auth(AuthMethod, ResConf) when
+        AuthMethod =:= <<"SCRAM_SHA_256">>;
+        AuthMethod =:= <<"SCRAM_SHA_512">> ->
+    A = maps:with([<<"username">>, <<"password">>], ResConf),
+    A#{<<"mechanism">> => string:lowercase(AuthMethod)};
+kafka_auth(<<"KERBEROS">>, ResConf) ->
+    #{<<"kerberos_principal">> := Principal} = ResConf,
+    case ResConf of
+        #{<<"kerberos_keytab_path">> := KeyTabPath} ->
+            io:format("[WARNING] Kafka uses Kerberos authnetication, please make sure that "
+                        "keytab file is copied to EMQX 5, EMQX 4.4 file path: ~s~n~n",
+                        [KeyTabPath]),
+            #{<<"kerberos_keytab_file">> => KeyTabPath,
+              <<"kerberos_principal">> => Principal};
+        #{<<"kerberos_keytab">> := #{<<"filename">> := Filename, <<"file">> := _}} ->
+            io:format("[WARNING] The input file contains Kerberos keytab file \"~s\" content "
+                        "for Kafka bridge authentication, which can't be migrated to EMQX 5.1 or later.~n"
+                        "The bridge config will be migrated without authentication, "
+                        "Please create keytab files on EMQX 5.1 (or later) nodes "
+                        "and add their paths in Kafka bridge config manually.~n~n",
+                        [Filename]),
+            '$absent'
     end.
 
 maybe_warn_not_supported(ResourceDesc, Key, Val) ->
@@ -1924,3 +1997,50 @@ maybe_enable_ssl_opts(Opts) ->
 add_config_by_type_name({Type, Name, Conf}, MapIn) ->
     UpdateFun = fun(ConfByType) -> ConfByType#{Name => Conf} end,
     maps:update_with(Type, UpdateFun, #{Name => Conf}, MapIn).
+
+convert_action_resource_fields(Spec, ActionArgs, ResourceConf) ->
+    convert_fields(Spec, maps:merge(ActionArgs, ResourceConf)).
+
+convert_fields(Spec, ConfIn) ->
+    lists:foldl(
+        fun ({NewKey, {'$value', Value}}, ConfOut) ->
+                ConfOut#{NewKey => Value};
+            ({NewKey, {'$spec', SubSpec}}, ConfOut) ->
+                ConfOut#{NewKey => convert_fields(SubSpec, ConfIn)};
+            ({NewKey, {OldKey, Default}}, ConfOut) ->
+                do_covert_fields(NewKey, OldKey, Default, undefined, ConfIn, ConfOut);
+            ({NewKey, {OldKey, Default, ConvertFun}}, ConfOut) ->
+                do_covert_fields(NewKey, OldKey, Default, ConvertFun, ConfIn, ConfOut)
+        end, #{}, Spec).
+
+do_covert_fields(NewKey, OldKey, Default, ConvertFun, ConfIn, ConfOut) ->
+    case maps:get(OldKey, ConfIn, Default) of
+        '$absent' -> ConfOut;
+        '$required' ->
+            throw({missing_requried_fields, #{missing_key => OldKey, config => ConfIn}});
+        Val when is_function(ConvertFun) ->
+            ConvertedVal = case erlang:fun_info(ConvertFun, arity) of
+                {arity, 1} -> ConvertFun(Val);
+                {arity, 2} -> ConvertFun(Val, ConfIn);
+                _ -> throw({invalid_converter, arity_should_be_1_or_2})
+            end,
+            case ConvertedVal of
+                '$absent' -> ConfOut;
+                ConvertedVal -> ConfOut#{NewKey => ConvertedVal}
+            end;
+        Val ->
+            ConfOut#{NewKey => Val}
+    end.
+
+map_to_kv_pairs(Map) when is_map(Map) ->
+    lists:map(fun({K, V}) ->
+            #{<<"key">> => K, <<"value">> => V}
+        end, maps:to_list(Map)).
+
+file_content(#{<<"file">> := Content}) when is_binary(Content) ->
+    Content;
+file_content(#{<<"file">> := Content}) when is_map(Content) ->
+    jsone:decode(Content).
+
+convert_payload_tmpl(<<>>) -> <<"${.}">>;
+convert_payload_tmpl(Tmpl) -> Tmpl.
