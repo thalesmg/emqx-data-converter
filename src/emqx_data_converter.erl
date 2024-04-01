@@ -204,14 +204,15 @@ main1(Opts) ->
     ok = convert_acl_mnesia(InputMap),
     ok = convert_blacklist_mnesia(InputMap),
     ok = convert_emqx_app_mnesia(InputMap),
-    OutRawConf = convert_auth_modules(InputMap, #{output_dir => OutputDir,
+    OutRawConfMod0 = convert_auth_modules(InputMap, #{output_dir => OutputDir,
                                                   user_id_type => UserIdType1,
                                                   jwt_type => JwtType}),
-    OutRawConf1 = convert_psk_auth(InputMap, OutRawConf),
-    OutRawConf2 = convert_rules_resources(InputMap, OutRawConf1),
+    OutRawConfMod1 = convert_psk_auth(InputMap, OutRawConfMod0),
+    OutRawConfMods = convert_retainer_module(InputMap, OutRawConfMod1),
+    OutRawConfModRule = convert_rules_resources(InputMap, OutRawConfMods),
     {BackupName, TarDescriptor} = prepare_new_backup(OutputDir),
     Edition = proplists:get_value(edition, Opts),
-    {ok, BackupTarName} = export(OutRawConf2, BackupName, TarDescriptor, Edition),
+    {ok, BackupTarName} = export(OutRawConfModRule, BackupName, TarDescriptor, Edition),
     file:del_dir_r(BackupName),
     io:format("[INFO] Converted to EMQX 5.1 backup file: ~s~n", [BackupTarName]).
 
@@ -455,17 +456,36 @@ sha256(SaltBin, Password) ->
     crypto:hash('sha256', <<SaltBin/binary, Password/binary>>).
 
 convert_psk_auth(#{<<"modules">> := Modules}, OutRawConf) ->
-    PskModules = lists:filter(fun(#{<<"type">> := <<"psk_authentication">>}) -> true;
-                                 (_) -> false
-                              end,
-                              Modules),
-    case PskModules of
+    case get_modules_by_type(<<"psk_authentication">>, Modules) of
         [#{<<"enabled">> := IsEnabled, <<"config">> := #{<<"psk_file">> := #{<<"file">> := F}}}] ->
             psk_auth(IsEnabled, F, OutRawConf);
         _ ->
             OutRawConf
     end;
 convert_psk_auth(_InputMap, OutRawConf) ->
+    OutRawConf.
+
+convert_retainer_module(#{<<"modules">> := Modules}, OutRawConf) ->
+    ConvertStorage = fun(<<"disc_only">>) -> <<"disc">>; (T) -> T end,
+    case get_modules_by_type(<<"retainer">>, Modules) of
+        [#{<<"enabled">> := IsEnabled, <<"config">> := Conf}] ->
+            RetainerConf = convert_fields(
+                [ {backend, {'$spec',
+                        [ {enable, {'$value', true}}
+                        , {type, {'$value', built_in_database}}
+                        , {storage_type, {<<"storage_type">>, <<"ram">>, ConvertStorage}}
+                        , {max_retained_messages, {<<"max_retained_messages">>, 0}}
+                        ]}}
+                , {max_payload_size, {<<"max_payload_size">>, <<"1MB">>}}
+                , {msg_expiry_interval, {<<"expiry_interval">>, 0}}
+                , {stop_publish_clear_msg, {<<"stop_publish_clear_msg">>, false}}
+                , {enable, {'$value', IsEnabled}}
+                ], Conf),
+            OutRawConf#{<<"retainer">> => RetainerConf};
+        _ ->
+            OutRawConf
+    end;
+convert_retainer_module(_InputMap, OutRawConf) ->
     OutRawConf.
 
 psk_auth(IsEnabled, FileContent, OutRawConf) ->
@@ -1484,8 +1504,7 @@ do_convert_action_resource(Action, _ActId, _Args, _ResId, ResType, _ResConf) ->
 resource_by_id(ResId, Resources) ->
     case lists:filter(fun(#{<<"id">> := Id}) -> Id =:= ResId end, Resources) of
         [Resource] -> Resource;
-        [] ->
-            undefined
+        [] -> undefined
     end.
 
 make_action_name(ResourceId) ->
@@ -2120,3 +2139,9 @@ topic_prepend(Parent0, W) ->
         $/ -> <<Parent/binary, (bin(W))/binary>>;
         _ -> <<Parent/binary, $/, (bin(W))/binary>>
     end.
+
+get_modules_by_type(Type, Modules) ->
+    lists:filter(fun
+            (#{<<"type">> := T}) when T =:= Type -> true;
+            (_) -> false
+        end, Modules).
