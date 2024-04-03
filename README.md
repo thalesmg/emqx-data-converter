@@ -1,7 +1,7 @@
 emqx_data_converter
 =====
 
-A CLI (implemented as escript) to convert EMQX 4.4 JSON backup files to EMQX 5.1+ tar.gz archive files.
+A CLI (implemented as escript) to convert EMQX 4.4 JSON backup files to EMQX 5.6+ tar.gz archive files.
 
 Currently, the following configs/data are converted:
 
@@ -18,9 +18,8 @@ Currently, the following configs/data are converted:
 - API Keys (Applications)
 - Rules and resources(bridges), except for:
   - IoTDB
-  - GCP Pubsub
-  - republish rules
   - Consumer bridges (modules in EMQX 4.4)
+    + MQTT Consumer has been supported.
 
 Incompatibilities that cannot be handled by the converter automatically are printed to the stdout,
 please don't ignore these warnings, as they may be helpful to correct compatibility issues afterwards.
@@ -40,10 +39,10 @@ Basic usage:
 emqx_data_converter <input file path>
 ```
 where `<input file path>` is a path to  EMQX 4.4 backup JSON file.
-This will produce EMQX 5.1+ backup file in the current working directory,
+This will produce EMQX 5.6+ backup file in the current working directory,
 the output file name will be printed out to the console:
 ```
-[INFO] Converted to EMQX 5.1 backup file: /conv/emqx-export-2023-07-13-14-48-58.895.tar.gz
+[INFO] Converted to EMQX 5.6+ backup file: /conv/emqx-export-2023-07-13-14-48-58.895.tar.gz
 ```
 Output directory can be set with `-o <dir path>` or `--output-dir <dir path>` option.
 Please note that the converter always needs write access to the current working directory (even when `-o <output dir>` is used),

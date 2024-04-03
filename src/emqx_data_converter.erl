@@ -208,7 +208,8 @@ main1(Opts) ->
                                                   user_id_type => UserIdType1,
                                                   jwt_type => JwtType}),
     OutRawConfMod1 = convert_psk_auth(InputMap, OutRawConfMod0),
-    OutRawConfMods = convert_retainer_module(InputMap, OutRawConfMod1),
+    OutRawConfMod2 = convert_mqtt_subscriber(InputMap, OutRawConfMod1),
+    OutRawConfMods = convert_retainer_module(InputMap, OutRawConfMod2),
     OutRawConfModRule = convert_rules_resources(InputMap, OutRawConfMods),
     {BackupName, TarDescriptor} = prepare_new_backup(OutputDir),
     Edition = proplists:get_value(edition, Opts),
@@ -466,9 +467,9 @@ convert_psk_auth(_InputMap, OutRawConf) ->
     OutRawConf.
 
 convert_retainer_module(#{<<"modules">> := Modules}, OutRawConf) ->
-    ConvertStorage = fun(<<"disc_only">>) -> <<"disc">>; (T) -> T end,
     case get_modules_by_type(<<"retainer">>, Modules) of
         [#{<<"enabled">> := IsEnabled, <<"config">> := Conf}] ->
+            ConvertStorage = fun(<<"disc_only">>) -> <<"disc">>; (T) -> T end,
             RetainerConf = convert_fields(
                 [ {backend, {'$spec',
                         [ {enable, {'$value', true}}
@@ -486,6 +487,37 @@ convert_retainer_module(#{<<"modules">> := Modules}, OutRawConf) ->
             OutRawConf
     end;
 convert_retainer_module(_InputMap, OutRawConf) ->
+    OutRawConf.
+
+convert_mqtt_subscriber(#{<<"modules">> := Modules}, OutRawConf0) ->
+    case get_modules_by_type(<<"mqtt_subscriber">>, Modules) of
+        [#{<<"enabled">> := IsEnabled, <<"config">> := Conf, <<"id">> := Id0}] ->
+            ConnectorName = make_component_name(Id0, <<"module:">>, <<"source_connector_">>),
+            %% EMQX 5.6.0 doesn't support multiple subscriptions in a MQTT source,
+            %% so we create a source for each subscription
+            {OutConf1, MqttSourceIds} = lists:foldl(fun(SubOpts, {ConfAcc, NameAcc}) ->
+                    Topic = maps:get(<<"topic">>, SubOpts),
+                    QoS = maps:get(<<"qos">>, SubOpts, 0),
+                    MqttSourceConf = #{
+                        <<"enable">> => IsEnabled,
+                        <<"connector">> => ConnectorName,
+                        <<"parameters">> => #{<<"topic">> => Topic, <<"qos">> => QoS}
+                    },
+                    RandId = emqx_data_converter_utils:random_id(8),
+                    SourceId = <<"source_", RandId/binary>>,
+                    {add_type_name_conf(<<"sources">>, <<"mqtt">>, SourceId, MqttSourceConf, ConfAcc),
+                     [SourceId | NameAcc]}
+                end, {OutRawConf0, []}, maps:get(<<"subscription_opts">>, Conf, [])),
+            ConnectorConf = convert_mqtt_connector_fields(Conf),
+            OutConf2 = add_type_name_conf(<<"connectors">>, <<"mqtt">>, ConnectorName, ConnectorConf, OutConf1),
+            %% we also add a rule that republish the topics to local broker.
+            RuleName = make_component_name(Id0, <<"module:">>, <<"mqtt_source_rule_">>),
+            RuleConf = make_source_mqtt_republish_rule(MqttSourceIds),
+            add_type_name_conf(<<"rule_engine">>, <<"rules">>, RuleName, RuleConf, OutConf2);
+        _ ->
+            OutRawConf0
+    end;
+convert_mqtt_subscriber(_InputMap, OutRawConf) ->
     OutRawConf.
 
 psk_auth(IsEnabled, FileContent, OutRawConf) ->
@@ -1288,11 +1320,7 @@ convert_ssl_opts(true, InConf) ->
     SNI = maps:get(<<"server_name_indication">>, InConf, <<>>),
     SSL1 = put_unless_empty(<<"server_name_indication">>, SNI, SSL#{<<"verify">> => Verify}),
     %% Available only for InfluxDB
-    case InConf of
-        #{<<"tls_version">> := TLSVersion} ->
-            SSL1#{<<"versions">> => [TLSVersion]};
-        _-> SSL1
-    end.
+    add_tls_version(InConf, SSL1).
 
 convert_ssl_files(InConf, SSL) ->
     Keys = [<<"cacertfile">>, <<"certfile">>, <<"keyfile">>],
@@ -1304,6 +1332,31 @@ convert_ssl_file(Key, InConf, SSL) ->
             SSL#{Key => Content};
         _ -> SSL
     end.
+
+add_tls_version(InConf, SSL1) ->
+    Versions = case InConf of
+        #{<<"tls_version">> := TLSVersion} ->
+            ssl_versions(TLSVersion);
+        #{<<"tls_versions">> := TLSVersionsStr} ->
+            ssl_versions(TLSVersionsStr);
+        _-> <<>>
+    end,
+    put_unless_empty(<<"versions">>, Versions, SSL1).
+
+ssl_versions([]) -> <<>>;
+ssl_versions(<<>>) -> <<>>;
+ssl_versions(Versions) when is_list(Versions), is_binary(hd(Versions)) ->
+    {_, AvailableVsns} = lists:keyfind(available, 1, ssl:versions()),
+    AvailableVsns1 = [atom_to_binary(A) || A <- AvailableVsns],
+    case lists:filter(fun(V) -> lists:member(V, AvailableVsns1) end, Versions) of
+        [] -> erlang:error(#{ reason => no_available_tls_version
+                            , desired => Versions
+                            , available => AvailableVsns1
+                            });
+        Filtered -> Filtered
+    end;
+ssl_versions(Versions) when is_binary(Versions) ->
+    ssl_versions([list_to_binary(R) || R <- string:lexemes(binary_to_list(Versions), ", ")]).
 
 put_unless_empty(_Key, <<>>, Map) ->
     Map;
@@ -1337,13 +1390,13 @@ convert_rules_resources(InputMap, OutRawConf) ->
           Rules),
     %% TODO convert resources not bound to any actions, but it may be possible only for a subset of
     %% EMQX 5.1 or later bridges that don't require a CMD
-    OutRawConf#{
+    emqx_data_converter_utils:deep_merge(OutRawConf, #{
         <<"rule_engine">> => #{
             <<"rules">> => OutRules
         },
         <<"actions">> => OutActions,
         <<"connectors">> => OutConnectors
-    }.
+    }).
 
 convert_rule(Rule, Resources, ActionsIn, ConnectorsIn) ->
     #{<<"id">> := Id, <<"rawsql">> := SQL, <<"enabled">> := IsEnabled,
@@ -1508,11 +1561,11 @@ resource_by_id(ResId, Resources) ->
     end.
 
 make_action_name(ResourceId) ->
-    make_bridge_name(ResourceId, <<"action_">>).
+    make_component_name(ResourceId, <<"resource:">>, <<"action_">>).
 make_connector_name(ResourceId) ->
-    make_bridge_name(ResourceId, <<"connector_">>).
-make_bridge_name(ResourceId, Prefix) ->
-    ResourceId1 = case string:prefix(ResourceId, <<"resource:">>) of
+    make_component_name(ResourceId, <<"resource:">>, <<"connector_">>).
+make_component_name(ResourceId, OldPrefix, Prefix) ->
+    ResourceId1 = case string:prefix(ResourceId, OldPrefix) of
                       nomatch -> ResourceId;
                       Id -> Id
                   end,
@@ -1961,27 +2014,18 @@ gcp_pubsub_action_resource(_ActionId, Args, ResId, ResConf) ->
 mqtt_action_resource(_ActionId, Args, ResId, ResConf) ->
     ConnectorType = <<"mqtt">>,
     BufferMode = fun(<<"on">>) -> <<"volatile_offload">>; (<<"off">>) -> <<"memory_only">> end,
-    ConvertMqttVsn = fun (<<"mqttv3">>) -> <<"v3">>; (<<"mqttv4">>) -> <<"v4">>;
-        (<<"mqttv5">>) -> <<"v5">> end,
-    MakeTopic = fun(ForwardTopic, ConfIn) ->
+    MakeTopic = fun(ForwardTopic0, ConfIn) ->
+        ForwardTopic = case ForwardTopic0 of
+            <<>> ->
+                %% NOTE: inheriting topic from the source MQTT message are not supported in EMQX 5.x,
+                %%   i.e. setting "topic = ${topic}" may or may not work as expected.
+                <<"${topic}">>;
+            _ -> ForwardTopic0
+        end,
         MountPoint = maps:get(<<"mountpoint">>, ConfIn, <<>>),
         topic_prepend(MountPoint, ForwardTopic)
     end,
-    %% Following fields are not supported in EMQX 5.x, drop them silently:
-    %%  - append
-    %%  - reconnect_interval
-    ConnConfs = convert_fields(
-        [ {server, {<<"address">>, '$required'}}
-        , {pool_size, {<<"pool_size">>, 8}}
-        , {clientid_prefix, {<<"clientid">>, <<"client">>}}
-        , {username, {<<"username">>, '$absent'}}
-        , {password, {<<"password">>, '$absent'}}
-        , {proto_ver, {<<"proto_ver">>, <<"mqttv4">>, ConvertMqttVsn}}
-        , {keepalive, {<<"keepalive">>, <<"60s">>}}
-        , {retry_interval, {<<"retry_interval">>, <<"20s">>}}
-        , {bridge_mode, {<<"bridge_mode">>, false}}
-        , {ssl, {<<"ssl">>, false, fun convert_ssl_opts/2}}
-        ], ResConf),
+    ConnConfs = convert_mqtt_connector_fields(ResConf),
     %% NOTE: inheriting 'qos', 'retain' from the source MQTT message are not supported in EMQX 5.x,
     %%   i.e. setting "qos = ${qos}" may or may not work as expected.
     ConvertQoS = fun
@@ -2002,6 +2046,25 @@ mqtt_action_resource(_ActionId, Args, ResId, ResConf) ->
     Connector = {ConnectorType, make_connector_name(ResId), ConnConfs},
     Action = {ConnectorType, make_action_name(ResId), ActionConfs},
     {Action, Connector}.
+
+convert_mqtt_connector_fields(ConfIn) ->
+    ConvertMqttVsn = fun (<<"mqttv3">>) -> <<"v3">>; (<<"mqttv4">>) -> <<"v4">>;
+        (<<"mqttv5">>) -> <<"v5">> end,
+    %% Following fields are not supported in EMQX 5.x, drop them silently:
+    %%  - append
+    %%  - reconnect_interval
+    convert_fields(
+        [ {server, {<<"address">>, '$required'}}
+        , {pool_size, {<<"pool_size">>, 8}}
+        , {clientid_prefix, {<<"clientid">>, <<"client">>}}
+        , {username, {<<"username">>, '$absent'}}
+        , {password, {<<"password">>, '$absent'}}
+        , {proto_ver, {<<"proto_ver">>, <<"mqttv4">>, ConvertMqttVsn}}
+        , {keepalive, {<<"keepalive">>, <<"60s">>}}
+        , {retry_interval, {<<"retry_interval">>, <<"20s">>}}
+        , {bridge_mode, {<<"bridge_mode">>, false}}
+        , {ssl, {<<"ssl">>, false, fun convert_ssl_opts/2}}
+        ], ConfIn).
 
 %% =============================================================================
 %% Helper functions
@@ -2145,3 +2208,31 @@ get_modules_by_type(Type, Modules) ->
             (#{<<"type">> := T}) when T =:= Type -> true;
             (_) -> false
         end, Modules).
+
+add_type_name_conf(Component, Type, Name, Conf, ConfIn) ->
+    Components = maps:get(Component, ConfIn, #{}),
+    TypedComponents = maps:get(Type, Components, #{}),
+    ConfIn#{
+        Component => Components#{
+            Type => TypedComponents#{Name => Conf}
+        }
+    }.
+
+make_source_mqtt_republish_rule(MqttSourceIds) ->
+    QuotedTopics = [<<"\"$bridges/mqtt:", Id/binary, "\"">> || Id <- MqttSourceIds],
+    Topics = list_to_binary(lists:join(<<",">>, QuotedTopics)),
+    #{
+        <<"sql">> => <<"SELECT * FROM ", Topics/binary>>,
+        <<"enable">> => true,
+        <<"description">> => <<"Republish messages from MQTT sources to local topics">>,
+        <<"actions">> => [#{
+            <<"function">> => <<"republish">>,
+            <<"args">> => #{
+                <<"topic">> => <<"${topic}">>,
+                <<"qos">> => <<"${qos}">>,
+                <<"retain">> => <<"${retain}">>,
+                <<"payload">> => <<"${payload}">>,
+                <<"user_properties">> => <<"${pub_props.'User-Property'}">>
+            }
+        }]
+    }.
