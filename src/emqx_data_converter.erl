@@ -1,5 +1,7 @@
 -module(emqx_data_converter).
 
+-include("emqx_data_converter.hrl").
+
 %% API exports
 -export([main/1]).
 
@@ -19,84 +21,16 @@
          {edition, $e, "emqx-edition", {string, "ee"},
           "EMQX edition of the both input and output backup files. Possible values: ee, ce. "
           "Please note that EMQX 5.1 or later doesn't allow to import ee backup file to ce cluster."},
-         {input_file, undefined, undefined, string, "Input EMQX 4.4 backup JSON file path."}]).
-
--type user_group() :: binary().
--type user_id() :: binary().
-
--record(user_info,
-        {user_id :: {user_group(), user_id()},
-         password_hash :: binary(),
-         salt :: binary(),
-         is_superuser :: boolean()
-        }).
-
--define(ACL_TABLE_ALL, 0).
--define(ACL_TABLE_USERNAME, 1).
--define(ACL_TABLE_CLIENTID, 2).
-
--define(ACL_FILE_COMMENTS,
-        "%%--------------------------------------------------------------------\n"
-        "%% -type(ipaddr() :: {ipaddr, string()}).\n"
-        "%%\n"
-        "%% -type(ipaddrs() :: {ipaddrs, [string()]}).\n"
-        "%%\n"
-        "%% -type(username() :: {user | username, string()} | {user | username, {re, regex()}}).\n"
-        "%%\n"
-        "%% -type(clientid() :: {client | clientid, string()} | {client | clientid, {re, regex()}}).\n"
-        "%%\n"
-        "%% -type(who() :: ipaddr() | ipaddrs() | username() | clientid() |\n"
-        "%%                {'and', [ipaddr() | ipaddrs() | username() | clientid()]} |\n"
-        "%%                {'or',  [ipaddr() | ipaddrs() | username() | clientid()]} |\n"
-        "%%                all).\n%%\n%% -type(action() :: subscribe | publish | all).\n"
-        "%%\n"
-        "%% -type(topic_filters() :: string()).\n"
-        "%%\n"
-        "%% -type(topics() :: [topic_filters() | {eq, topic_filters()}]).\n"
-        "%%\n"
-        "%% -type(permission() :: allow | deny).\n"
-        "%%\n"
-        "%% -type(rule() :: {permission(), who(), action(), topics()} | {permission(), all}).\n"
-        "%%--------------------------------------------------------------------\n\n"
-       ).
-
--type action() :: subscribe | publish | all.
--type permission() :: allow | deny.
--type topic() :: binary().
-
--type rule() :: {permission(), action(), topic()}.
--type rules() :: [rule()].
-
--record(emqx_acl,
-        {who :: ?ACL_TABLE_ALL | {?ACL_TABLE_USERNAME, binary()} | {?ACL_TABLE_CLIENTID, binary()},
-         rules :: rules()
-        }).
-
--record(banned,
-        {who :: {clientid, binary()}
-              | {peerhost, inet:ip_address()}
-              | {username, binary()},
-         by :: binary(),
-         reason :: binary(),
-         at :: integer(),
-         until :: integer()
-        }).
-
--record(psk_entry,
-        {psk_id :: binary(),
-         shared_secret :: binary(),
-         extra :: term()
-        }).
-
--record(emqx_app,
-        {name = <<>> :: binary() | '_',
-         api_key = <<>> :: binary() | '_',
-         api_secret_hash = <<>> :: binary() | '_',
-         enable = true :: boolean() | '_',
-         desc = <<>> :: binary() | '_',
-         expired_at = 0 :: integer() | undefined | infinity | '_',
-         created_at = 0 :: integer() | '_'
-        }).
+         {input_file, undefined, undefined, string, "Input EMQX 4.4 backup JSON file path."},
+         {data_files_dir, $r, "data-files-dir", {string, undefined},
+          "Path to the dir that contains EMQX 4.4.x DCD and DCL files. "
+          "The DCD and DCL files can be found in the data dir of the EMQX 4.4.x installation. i.e. data files for emqx_retainer are named as 'emqx_retainer.DCD' and 'emqx_retainer.DCL'. "
+          "If the retainer used RAM copy in EMQX 4.4.x, you can generate the files by running the following command: "
+          "  emqx eval 'mnesia:dump_tables([emqx_retainer])'"
+          "After data is imported into EMQX 5.x, run the following command to reindex the retain topics: "
+          "  emqx ctl retainer reindex start"
+         }
+        ]).
 
 -define(tar(_FileName_), _FileName_ ++ ?TAR_SUFFIX).
 -define(TAR_SUFFIX, ".tar.gz").
@@ -112,8 +46,8 @@
 -define(META_FILENAME, "META.hocon").
 -define(CLUSTER_HOCON_FILENAME, "cluster.hocon").
 -define(BACKUP_MNESIA_DIR, "mnesia").
--define(AUTHN_CHAIN_5_1, 'mqtt:global').
--define(VERSION_5_1, "5.1.1").
+-define(AUTHN_CHAIN_5_6, 'mqtt:global').
+-define(VERSION_5_6, "5.6.1").
 
 -define(PLACEHOLDERS,
         [{<<"${username}">>, <<"%u">>},
@@ -149,7 +83,8 @@ main(Args) ->
     try
         main1(Opts)
     after
-        file:del_dir_r("Mnesia." ++ atom_to_list(node()))
+        MnesaDir = mnesia_monitor:get_env(dir),
+        file:del_dir_r(MnesaDir)
     end.
 
 %%====================================================================
@@ -200,6 +135,8 @@ main1(Opts) ->
     {ok, InputBin} = file:read_file(proplists:get_value(input_file, Opts)),
     InputMap = jsone:decode(InputBin),
     ok = setup_mnesia(),
+    ok = copy_data_files(proplists:get_value(data_files_dir, Opts)),
+    ok = convert_retained_messages(),
     {ok, UserIdType1} = convert_auth_mnesia(InputMap, UserIdType),
     ok = convert_acl_mnesia(InputMap),
     ok = convert_blacklist_mnesia(InputMap),
@@ -233,6 +170,11 @@ tabs_spec() ->
           [{type, ordered_set},
            {record_name, emqx_acl},
            {attributes, record_info(fields, emqx_acl)}
+          ],
+      emqx_retainer_message =>
+          [{type, ordered_set},
+           {record_name, retained_message},
+           {attributes, record_info(fields, retained_message)}
           ],
       emqx_banned =>
           [{type, set},
@@ -274,7 +216,7 @@ export(OutRawConf, BackupName, TarDescriptor, Edition) ->
     BackupBaseName = filename:basename(BackupName),
     BackupTarName = ?tar(BackupName),
     Meta = #{
-             version => ?VERSION_5_1,
+             version => ?VERSION_5_6,
              edition => Edition
             },
     MetaBin = bin(hocon_pp:do(Meta, #{})),
@@ -317,6 +259,31 @@ do_export_mnesia_tab(TabName, BackupName) ->
 mnesia_backup_name(Path, TabName) ->
     filename:join([Path, ?BACKUP_MNESIA_DIR, atom_to_list(TabName)]).
 
+copy_data_files(undefined) -> ok;
+copy_data_files(DataFilesDir) ->
+    MnesaDir = mnesia_monitor:get_env(dir),
+    DataFiles = filelib:wildcard(filename:join([DataFilesDir, "*.DCD"]))
+             ++ filelib:wildcard(filename:join([DataFilesDir, "*.DCL"])),
+    lists:foreach(fun(File) ->
+            {ok, _} = file:copy(File, filename:join(MnesaDir, filename:basename(File)))
+        end, DataFiles).
+
+convert_retained_messages() ->
+    case mnesia_lib:exists(mnesia_lib:tab2dcd(emqx_retainer)) of
+        true ->
+            ets:new(emqx_retainer, [set, named_table, public, {keypos, 2}]),
+            mnesia_log:dcd2ets(emqx_retainer),
+            MsgNum = ets:foldl(fun({retained, Topic, Message44, Expiry}, Count) ->
+                Msg = convert_to_message_5_6(Message44),
+                ok = mnesia:dirty_write(emqx_retainer_message,
+                        #retained_message{topic = Topic, msg = Msg, expiry_time = Expiry}),
+                Count + 1
+            end, 0, emqx_retainer),
+            io:format("[INFO] Converted ~B retained messages.~n", [MsgNum]);
+        false ->
+            io:format("[WARNING] No retained messages to migrate.~n", [])
+    end.
+
 convert_auth_mnesia(#{<<"auth_mnesia">> := AuthMnesiaData}, UserIdType) ->
     UserIdType1 = user_type(AuthMnesiaData, UserIdType),
     lists:foreach(
@@ -324,7 +291,7 @@ convert_auth_mnesia(#{<<"auth_mnesia">> := AuthMnesiaData}, UserIdType) ->
               <<Salt:32, PHash/binary>> = base64:decode(P),
               ok = mnesia:dirty_write(
                      emqx_authn_mnesia,
-                     #user_info{user_id = {?AUTHN_CHAIN_5_1, L},
+                     #user_info{user_id = {?AUTHN_CHAIN_5_6, L},
                                 password_hash = PHash,
                                 salt = <<Salt:32>>,
                                 is_superuser = false}
@@ -2236,3 +2203,6 @@ make_source_mqtt_republish_rule(MqttSourceIds) ->
             }
         }]
     }.
+
+convert_to_message_5_6(?message_4_4(Id, QoS, From, Flags, Headers, Topic, Payload, Timestamp)) ->
+   ?message_5_6(Id, QoS, From, Flags, Headers, Topic, Payload, Timestamp, #{}).
