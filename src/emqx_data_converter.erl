@@ -150,7 +150,7 @@ main1(Opts) ->
     OutRawConfRule = convert_rules_resources(InputMap, OutRawConf),
     {BackupName, TarDescriptor} = prepare_new_backup(OutputDir),
     Edition = proplists:get_value(edition, Opts),
-    {ok, BackupTarName} = export(OutRawConfRule, BackupName, TarDescriptor, Edition),
+    {ok, BackupTarName} = export(OutRawConfRule, BackupName, TarDescriptor, Edition, OutputDir),
     file:del_dir_r(BackupName),
     log_info("Converted to EMQX 5.1 backup file: ~s", [BackupTarName]).
 
@@ -212,7 +212,7 @@ prepare_new_backup(OutputDir) ->
     {ok, TarDescriptor} = ?fmt_tar_err(erl_tar:open(BackupTarName, [write, compressed])),
     {BackupName, TarDescriptor}.
 
-export(OutRawConf, BackupName, TarDescriptor, Edition) ->
+export(OutRawConf, BackupName, TarDescriptor, Edition, OutputDir) ->
     BackupBaseName = filename:basename(BackupName),
     BackupTarName = ?tar(BackupName),
     Meta = #{
@@ -225,9 +225,22 @@ export(OutRawConf, BackupName, TarDescriptor, Edition) ->
     ok = export_mnesia_tabs(TarDescriptor, BackupName, BackupBaseName),
     RawConfBin = bin(hocon_pp:do(OutRawConf, #{})),
     ConfNameInArchive = filename:join(BackupBaseName, ?CLUSTER_HOCON_FILENAME),
+    ok = add_acl_conf_file(TarDescriptor, BackupBaseName, OutputDir),
     ok = ?fmt_tar_err(erl_tar:add(TarDescriptor, RawConfBin, ConfNameInArchive, [])),
     ok = ?fmt_tar_err(erl_tar:close(TarDescriptor)),
     {ok, BackupTarName}.
+
+add_acl_conf_file(TarDescriptor, BackupBaseName, OutputDir) ->
+    TmpFile = output_acl_file_path(OutputDir),
+    case filelib:is_regular(TmpFile) of
+        true ->
+            NameInArchive = filename:join([BackupBaseName, "authz", "acl.conf"]),
+            ok = ?fmt_tar_err(erl_tar:add(TarDescriptor, TmpFile, NameInArchive, [])),
+            file:delete(TmpFile),
+            ok;
+        false ->
+            ok
+    end.
 
 export_mnesia_tabs(TarDescriptor, BackupName, BackupBaseName) ->
     lists:foreach(
@@ -1195,8 +1208,10 @@ convert_acl_rules(_IsEnabled, <<>> = _AclRules, _Opts) ->
     log_warning("Skipping ACL file authorization, as ACL file content is empty."),
     undefined;
 convert_acl_rules(IsEnabled, AclRulesBin, Opts) ->
-    TmpFile = filename:join(maps:get(output_dir, Opts), "acl.conf"),
+    OutputDir = maps:get(output_dir, Opts),
+    TmpFile = output_acl_file_path(OutputDir),
     try
+        ok = filelib:ensure_dir(TmpFile),
         ok = file:write_file(TmpFile, AclRulesBin),
         {ok, AclRules0} = file:consult(TmpFile),
         AclRules = lists:map(
@@ -1207,19 +1222,20 @@ convert_acl_rules(IsEnabled, AclRulesBin, Opts) ->
                              io_lib:format("~p.~n~n", [AllRule])
                      end,
                      AclRules0),
-        AclRules1 = iolist_to_binary([?ACL_FILE_COMMENTS | AclRules]),
+        ok = file:write_file(TmpFile, [?ACL_FILE_COMMENTS | AclRules]),
         #{<<"enable">> => IsEnabled,
           <<"type">> => <<"file">>,
-          <<"rules">> => AclRules1}
+          <<"path">> => filename:join(["data", "authz", "acl.conf"])}
     catch
         _:Reason:St ->
             log_error(
-              "failed to convert ACL file, reason: ~p, stacktrace: ~p",
+              "failed to convert ACL file, reason: ~p, stacktrace:\n  ~p",
               [Reason, St]),
             undefined
-    after
-        file:delete(TmpFile)
     end.
+
+output_acl_file_path(OutputDir) ->
+    filename:join([OutputDir, "tmp", "authz", "acl.conf"]).
 
 convert_access_type(subscribe) -> subscribe;
 convert_access_type(publish) -> publish;
