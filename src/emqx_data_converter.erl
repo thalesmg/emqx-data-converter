@@ -141,16 +141,16 @@ main1(Opts) ->
     ok = convert_acl_mnesia(InputMap),
     ok = convert_blacklist_mnesia(InputMap),
     ok = convert_emqx_app_mnesia(InputMap),
-    OutRawConfMod0 = convert_auth_modules(InputMap, #{output_dir => OutputDir,
+    OutRawConf0 = convert_auth_modules(InputMap, #{output_dir => OutputDir,
                                                   user_id_type => UserIdType1,
                                                   jwt_type => JwtType}),
-    OutRawConfMod1 = convert_psk_auth(InputMap, OutRawConfMod0),
-    OutRawConfMod2 = convert_mqtt_subscriber(InputMap, OutRawConfMod1),
-    OutRawConfMods = convert_retainer_module(InputMap, OutRawConfMod2),
-    OutRawConfModRule = convert_rules_resources(InputMap, OutRawConfMods),
+    OutRawConf1 = convert_psk_auth(InputMap, OutRawConf0),
+    OutRawConf2 = convert_mqtt_subscriber(InputMap, OutRawConf1),
+    OutRawConf = convert_retainer_module(InputMap, OutRawConf2),
+    OutRawConfRule = convert_rules_resources(InputMap, OutRawConf),
     {BackupName, TarDescriptor} = prepare_new_backup(OutputDir),
     Edition = proplists:get_value(edition, Opts),
-    {ok, BackupTarName} = export(OutRawConfModRule, BackupName, TarDescriptor, Edition),
+    {ok, BackupTarName} = export(OutRawConfRule, BackupName, TarDescriptor, Edition),
     file:del_dir_r(BackupName),
     io:format("[INFO] Converted to EMQX 5.1 backup file: ~s~n", [BackupTarName]).
 
@@ -1402,7 +1402,7 @@ convert_action_resource(#{<<"name">> := Name, <<"id">> := Id,
                 {{ActType, ActName, ActConf}, {ConnType, ConnName, ConnConf}} ->
                     OutActionId = <<ActType/binary, ":", ActName/binary>>,
                     {OutActionId,
-                        {ActType, ActName, with_common_action_fields(ActArgs, ActConf, ConnName)}, 
+                        {ActType, ActName, with_common_action_fields(ActArgs, ActConf, ConnName)},
                         {ConnType, ConnName, with_common_connnector_fields(ResParams, ConnConf)}};
                 undefined ->
                     undefined
@@ -1436,7 +1436,7 @@ convert_standlone_action(<<"republish">>, _ActId, Args) ->
             , {mqtt_properties, {<<"mqtt_properties_template">>, [], fun kv_pairs_to_map/1}}
             , {user_properties, {<<"user_properties_template">>, [], SetUserProps}}
             ], Args)
-    }, 
+    },
     {standalone_action, ActionConf};
 convert_standlone_action(<<"inspect">>, _ActId, Args) ->
     {standalone_action, #{
@@ -2128,7 +2128,7 @@ do_covert_fields(NewKey, OldKey, Default, ConvertFun, ConfIn, ConfOut) ->
     case maps:get(OldKey, ConfIn, Default) of
         '$absent' -> ConfOut;
         '$required' ->
-            throw({missing_requried_fields, #{missing_key => OldKey, config => ConfIn}});
+            throw({missing_required_fields, #{missing_key => OldKey, config => ConfIn}});
         Val when is_function(ConvertFun) ->
             ConvertedVal = case erlang:fun_info(ConvertFun, arity) of
                 {arity, 1} -> ConvertFun(Val);
