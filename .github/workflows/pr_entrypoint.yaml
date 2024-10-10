@@ -2,6 +2,10 @@ name: PR Entrypoint
 
 on:
   pull_request: {}
+  workflow_dispatch:
+    inputs:
+      ref:
+        required: false
 
 jobs:
   init:
@@ -16,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4.1.1
+        with:
+          ref: ${{ github.event.inputs.ref }}
       - name: Set up environment
         id: env_setup
         run: |
@@ -36,6 +42,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4.1.1
+        with:
+          ref: ${{ github.event.inputs.ref }}
       - name: build
         run: |
           rebar3 escriptize
