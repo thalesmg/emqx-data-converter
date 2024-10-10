@@ -70,6 +70,45 @@ emqx_data_converter --help
 
 Help command contains info about several 'business logic' options, please make sure to read it.
 
+## Importing converted data
+
+After convertion, the output tarball contains a structure similar to this:
+
+```
+/tmp/emqx-export-2024-10-10-14-27-58.171/
+├── authz
+│   └── acl.conf
+├── cluster.hocon
+├── META.hocon
+└── mnesia
+    ├── emqx_acl
+    ├── emqx_app
+    ├── emqx_authn_mnesia
+    ├── emqx_banned
+    ├── emqx_psk
+    └── emqx_retainer_message
+```
+
+- `authz/acl.conf` must be copied to `$EMQX_DATA_DIR/authz/acl.conf`, where `$EMQX_DATA_DIR` is EMQX's data directory and depends on the installation method and system (typically `/var/lib/emqx/data` or `/opt/emqx/data`).
+- `cluster.hocon` must be copied to `$EMQX_DATA_DIR/configs/cluster.hocon`.
+- Each file in `mnesia` dir must be imported with the following command:
+
+  ```sh
+  emqx eval 'mnesia:restore("/full/path/to/file", []).'
+  ```
+
+  So, for example:
+
+  ```sh
+  emqx eval 'mnesia:restore("/tmp/emqx-export-2024-10-10-14-27-58.171/mnesia/emqx_authn_mnesia", []).'
+  ```
+
+  Yields, when successful:
+
+  ```
+  {atomic, [emqx_authn_mnesia]}
+  ```
+
 # Build
 
 ## Prerequisites
