@@ -1,0 +1,39 @@
+name: Integration tests
+
+on:
+  workflow_call:
+    inputs:
+      ubuntu_vsn:
+        required: true
+        type: string
+      emqx_image:
+        required: true
+        type: string
+      otp:
+        required: true
+        type: string
+      elixir:
+        required: true
+        type: string
+
+jobs:
+  integration_tests:
+    runs-on: ubuntu-${{ inputs.ubuntu_vsn }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.1
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1.17.5
+        with:
+          otp-version: ${{ inputs.otp }}
+          elixir-version: ${{ inputs.elixir }}
+      - uses: actions/download-artifact@v4.1.8
+        with:
+          name: emqx_data_converter
+      - name: Convert and load configs
+        env:
+          EMQX_IMAGE: ${{ inputs.emqx_image }}
+        run: |
+          chmod +x ./emqx_data_converter
+          docker pull ${{ inputs.emqx_image }}
+          test/scripts/test-convert-and-load.exs
