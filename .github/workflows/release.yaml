@@ -58,6 +58,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    runs-on: ubuntu-latest
     needs:
       - init
       - build
@@ -66,13 +67,12 @@ jobs:
         with:
           name: emqx_data_converter
       - name: rename executable
-        run: mv emqx_data_converter emqx_data_converter-ubuntu${{ inputs.init.outputs.UBUNTU_VSN }}
+        run: mv emqx_data_converter emqx_data_converter-ubuntu${{ needs.init.outputs.UBUNTU_VSN }}
       - name: Create Release
-        if: github.event_name == 'tag'
         uses: softprops/action-gh-release@v2.0.8
         with:
           name: emqx-data-converter ${{ github.ref_name }}
           body: emqx-data-converter ${{ github.ref_name }}
           files: emqx_data_converter-*
-          draft: false
-          prerelease: false
+          draft: ${{ github.event_name != 'tag' }}
+          prerelease: ${{ github.event_name != 'tag' }}
