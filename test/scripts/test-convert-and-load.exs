@@ -1,6 +1,7 @@
 #!/usr/bin/env elixir
 
-defmodule Test.ConvertAndLoad do
+# test helpers
+defmodule TH do
   require Logger
 
   @container_name "emqx-data-converter"
@@ -15,11 +16,16 @@ defmodule Test.ConvertAndLoad do
 
   def convert!(input_filepath) do
     Logger.info(%{input: input_filepath, msg: "converting_input"})
-    {:ok, output} = run(converter_path(), [
-      "-o", "/tmp",
-      input_filepath
-    ])
+
+    {:ok, output} =
+      run(converter_path(), [
+        "-o",
+        "/tmp",
+        input_filepath
+      ])
+
     res = Regex.run(~r/backup file: (?<filepath>.+)/, output, capture: ["filepath"])
+
     case res do
       [filepath] ->
         {:ok, filepath}
@@ -29,11 +35,10 @@ defmodule Test.ConvertAndLoad do
     end
   end
 
-  def import!(input_filepath) do
+  def place_files(input_filepath, outdir) do
     Logger.info(%{input: input_filepath, msg: "importing_input"})
     File.mkdir_p!("converted")
     {:ok, _} = run("bash", ["-c", "tar -C converted -xvf #{input_filepath} --strip-components=1"])
-    outdir = "/opt/data/converted"
 
     {:ok, _} =
       run_in_container([
@@ -41,6 +46,14 @@ defmodule Test.ConvertAndLoad do
         "mkdir -p data/authz/",
         "cp #{outdir}/authz/acl.conf data/authz/acl.conf"
       ])
+
+    :ok
+  end
+
+  def import!(input_filepath) do
+    outdir = "/opt/data/converted"
+
+    :ok = place_files(input_filepath, outdir)
 
     Logger.info(%{msg: "starting_emqx"})
     :ok = start_emqx()
@@ -56,8 +69,9 @@ defmodule Test.ConvertAndLoad do
   def start_emqx(opts \\ []) do
     wait_s = Keyword.get(opts, :wait_s, 15)
 
-    res =
-      run_in_container("env EMQX_NODE_NAME=$(<nodename) EMQX_WAIT_FOR_START=#{wait_s} emqx start")
+    cmd = "env EMQX_NODE_NAME=$(<nodename) EMQX_WAIT_FOR_START=#{wait_s} emqx start"
+    Logger.debug(%{msg: "starting_emqx", cmd: cmd})
+    res = run_in_container(cmd)
 
     case res do
       {:ok, _} ->
@@ -110,6 +124,7 @@ defmodule Test.ConvertAndLoad do
 
   def start_container(image) do
     Logger.info(%{msg: "starting_container", image: image})
+
     run(
       "docker",
       [
@@ -133,22 +148,22 @@ defmodule Test.ConvertAndLoad do
   end
 
   def stop_container() do
-    Logger.info(%{msg: "starting_container"})
+    Logger.info(%{msg: "stopping_container"})
     {:ok, _} = run("docker", ["rm", "-f", @container_name])
     Logger.info(%{msg: "container_stopped"})
   end
 
-  def run_in_container(cmd) do
+  def run_in_container(cmd, opts \\ []) do
     cmd =
       cmd
       |> List.wrap()
       |> Enum.join(" ; ")
 
-    run("docker", ["exec", @container_name, "bash", "-c", cmd])
+    run("docker", ["exec", @container_name, "bash", "-c", cmd], opts)
   end
 
-  def run(command, args) do
-    {out, exit_code} = System.cmd(command, args)
+  def run(command, args, opts \\ []) do
+    {out, exit_code} = System.cmd(command, args, opts)
 
     if exit_code != 0 do
       {:error, exit_code, out}
@@ -156,21 +171,30 @@ defmodule Test.ConvertAndLoad do
       {:ok, out}
     end
   end
-
-  def main() do
-    Logger.info(%{msg: "starting_container"})
-    image = System.fetch_env!("EMQX_IMAGE")
-
-    list_test_configs()
-    |> Enum.each(fn emqx44_backup_path ->
-      Logger.info(%{msg: "running_test_case", input_path: emqx44_backup_path})
-      {:ok, _} = start_container(image)
-      {:ok, converted_path} = convert!(emqx44_backup_path)
-      :ok = import!(converted_path)
-      Logger.info(%{msg: "test_case_succeeded", input_path: emqx44_backup_path})
-      stop_container()
-    end)
-  end
 end
 
-Test.ConvertAndLoad.main()
+ExUnit.start()
+
+defmodule Tests do
+  use ExUnit.Case
+
+  require Logger
+
+  setup_all do
+    {:ok, %{image: System.fetch_env!("EMQX_IMAGE")}}
+  end
+
+  setup %{image: image} do
+    TH.stop_container()
+    on_exit(&TH.stop_container/0)
+    {:ok, _} = TH.start_container(image)
+    :ok
+  end
+
+  test "barebones" do
+    path = "test/data/barebones.json"
+    {:ok, converted_path} = TH.convert!(path)
+    on_exit(fn -> File.rm(converted_path) end)
+    :ok = TH.import!(converted_path)
+  end
+end
