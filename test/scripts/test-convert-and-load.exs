@@ -69,21 +69,37 @@ defmodule TH do
   def start_emqx(opts \\ []) do
     wait_s = Keyword.get(opts, :wait_s, 15)
 
-    cmd = "env EMQX_NODE_NAME=$(<nodename) EMQX_WAIT_FOR_START=#{wait_s} emqx start"
+    cmd = [
+      "export EMQX_WAIT_FOR_START=#{wait_s}",
+      # "export DEBUG=2",
+      "docker-entrypoint.sh emqx foreground"
+    ]
+
     Logger.debug(%{msg: "starting_emqx", cmd: cmd})
-    res = run_in_container(cmd)
 
-    case res do
-      {:ok, _} ->
-        :ok
+    # stupid and ugly hack because, for unknown reasons, `emqx start` hangs for ~ 62
+    # seconds when running before starting locally, but runs fine in CI...  🫠
+    spawn_link(fn ->
+      run_in_container(cmd)
+    end)
 
-      {:error, _, output} = err ->
-        if output =~ "is already" do
-          :ok
-        else
-          err
-        end
-    end
+    Enum.reduce_while(1..wait_s, :error, fn _, acc ->
+      Process.sleep(1_000)
+
+      case run_in_container("emqx ctl status") do
+        {:ok, output} ->
+          IO.puts(output)
+
+          if output =~ "is started" do
+            {:halt, :ok}
+          else
+            {:cont, acc}
+          end
+
+        _ ->
+          {:cont, acc}
+      end
+    end)
   end
 
   def import_table(table, outdir) do
@@ -142,7 +158,7 @@ defmodule TH do
         image,
         "bash",
         "-c",
-        "echo $EMQX_NODE_NAME > nodename ; tail -f /dev/null"
+        "tail -f /dev/null"
       ]
     )
   end
