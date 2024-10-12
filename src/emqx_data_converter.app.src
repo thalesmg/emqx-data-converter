@@ -1,6 +1,6 @@
 {application, emqx_data_converter,
- [{description, "An escript to convert EMQX backup files (EMQX 4.4 -> EMQX 5.1)"},
-  {vsn, "0.2.1"},
+ [{description, "An escript to convert EMQX backup files (EMQX 4.4 -> EMQX 5.x)"},
+  {vsn, "0.3.1"},
   {registered, []},
   {applications,
    [kernel,

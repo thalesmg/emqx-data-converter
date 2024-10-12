@@ -13,12 +13,9 @@ jobs:
   init:
     runs-on: ubuntu-latest
     outputs:
-      BUILDER_VSN: ${{ steps.env_setup.outputs.BUILDER_VSN }}
-      OTP_VSN: ${{ steps.env_setup.outputs.OTP_VSN }}
+      BUILDER_VSN: ${{ steps.env_setup.outputs.EMQX_BUILDER_VSN }}
+      OTP_VSN: ${{ steps.env_setup.outputs.EMQX_OTP_VSN }}
       ELIXIR_VSN: ${{ steps.env_setup.outputs.ELIXIR_VSN }}
-      BUILDER: ${{ steps.env_setup.outputs.BUILDER }}
-      EMQX_IMAGE: ${{ steps.env_setup.outputs.EMQX_IMAGE }}
-      UBUNTU_VSN: ${{ steps.env_setup.outputs.UBUNTU_VSN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4.1.1
@@ -28,19 +25,22 @@ jobs:
         id: env_setup
         run: |
           source test/scripts/env.sh
-          echo "BUILDER_VSN=$EMQX_BUILDER_VSN" | tee -a "$GITHUB_OUTPUT"
-          echo "EMQX_OTP_VSN=$OTP_VSN" | tee -a "$GITHUB_OUTPUT"
-          echo "OTP_VSN=$OTP_VSN" | tee -a "$GITHUB_OUTPUT"
+          echo "EMQX_BUILDER_VSN=$EMQX_BUILDER_VSN" | tee -a "$GITHUB_OUTPUT"
+          echo "EMQX_OTP_VSN=$EMQX_OTP_VSN" | tee -a "$GITHUB_OUTPUT"
           echo "ELIXIR_VSN=$ELIXIR_VSN" | tee -a "$GITHUB_OUTPUT"
-          echo "BUILDER=$EMQX_BUILDER" | tee -a "$GITHUB_OUTPUT"
-          echo "EMQX_IMAGE=$EMQX_IMAGE" | tee -a "$GITHUB_OUTPUT"
-          echo "UBUNTU_VSN=$UBUNTU_VSN" | tee -a "$GITHUB_OUTPUT"
 
   build:
     runs-on: ubuntu-latest
-    container: ${{ needs.init.outputs.builder }}
+    container: ghcr.io/emqx/emqx-builder/${{ needs.init.outputs.BUILDER_VSN }}:${{ needs.init.outputs.ELIXIR_VSN }}-${{ needs.init.outputs.OTP_VSN }}-${{ matrix.os }}
     needs:
       - init
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu24.04
+          - ubuntu22.04
+          - ubuntu20.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4.1.1
@@ -48,13 +48,12 @@ jobs:
           ref: ${{ github.event.inputs.ref }}
       - name: build
         run: |
-          rebar3 escriptize
-          cp _build/default/bin/emqx_data_converter ./
+          ./package
       - uses: actions/upload-artifact@v4.3.5
         with:
-          name: emqx_data_converter
-          path: emqx_data_converter
-          retention-days: 1
+          name: emqx-data-converter-${{ matrix.os }}
+          path: emqx-data-converter*.tar.gz
+          retention-days: 14
           if-no-files-found: error
 
   release:
@@ -65,14 +64,14 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4.1.8
         with:
-          name: emqx_data_converter
-      - name: rename executable
-        run: mv emqx_data_converter emqx_data_converter-ubuntu${{ needs.init.outputs.UBUNTU_VSN }}
+          pattern: "emqx-data-converter-*"
+          path: packages
+          merge-multiple: true
       - name: Create Release
         uses: softprops/action-gh-release@v2.0.8
         with:
           name: emqx-data-converter ${{ github.ref_name }}
           body: emqx-data-converter ${{ github.ref_name }}
-          files: emqx_data_converter-*
+          files: packages/*
           draft: ${{ github.event_name != 'tag' }}
           prerelease: ${{ github.event_name != 'tag' }}
