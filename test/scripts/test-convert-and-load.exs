@@ -14,15 +14,24 @@ defmodule TH do
     Path.wildcard("test/data/*.json")
   end
 
-  def convert!(input_filepath) do
-    Logger.info(%{input: input_filepath, msg: "converting_input"})
+  def wrap_if(_x, false), do: []
+  def wrap_if(x, true), do: List.wrap(x)
+
+  def convert!(input_filepath, opts \\ []) do
+    Logger.info(%{input: input_filepath, msg: "converting_input", opts: opts})
+
+    data_files_dir = Keyword.get(opts, :data_files_dir)
 
     {:ok, output} =
-      run(converter_path(), [
-        "-o",
-        "/tmp",
-        input_filepath
-      ])
+      run(
+        converter_path(),
+        List.flatten([
+          "-o",
+          "/tmp",
+          wrap_if(["--data-files-dir", data_files_dir], !!data_files_dir),
+          input_filepath
+        ])
+      )
 
     res = Regex.run(~r/backup file: (?<filepath>.+)/, output, capture: ["filepath"])
 
@@ -152,7 +161,8 @@ defmodule TH do
         # in case we want to execute RPC via gen_rpc
         # "-p", "5370:5369",
         # dashboard
-        # "-p", "28083:18083",
+        "-p",
+        "48083:18083",
         "--name",
         @container_name,
         image,
@@ -189,12 +199,47 @@ defmodule TH do
   end
 end
 
+Mix.install([{:httpoison, "2.2.1"}])
+
 ExUnit.start()
 
 defmodule Tests do
   use ExUnit.Case
 
   require Logger
+
+  @moduledoc """
+  Exploring locally:
+
+      image = "emqx/emqx-enterprise:5.8.0"
+      TH.start_container(image)
+      outdir = "/opt/data/converted"
+      path = "test/data/barebones.json"
+      {:ok, converted_path} = TH.convert!(path)
+      TH.place_files(converted_path, outdir)
+
+  After this, `docker exec -it emqx-data-converter bash`
+
+  Or:
+
+      TH.import_table("emqx_app", outdir)
+  """
+
+  # exposed by docker
+  @api_port 48083
+
+  def api_req!(method, path, body \\ "") do
+    api_user = "app_id"
+    api_pass = "4mVZvVT9CnC6Z3AYdk9C07Ecz9AuBCLblb43kk69BcxbBhP"
+    authn64 = Base.encode64("#{api_user}:#{api_pass}")
+
+    HTTPoison.request!(
+      method,
+      "http://localhost:#{@api_port}/api/v5/#{path}",
+      body,
+      [{"Authorization", "Basic #{authn64}"}]
+    )
+  end
 
   setup_all do
     {:ok, %{image: System.fetch_env!("EMQX_IMAGE")}}
@@ -212,5 +257,17 @@ defmodule Tests do
     {:ok, converted_path} = TH.convert!(path)
     on_exit(fn -> File.rm(converted_path) end)
     :ok = TH.import!(converted_path)
+  end
+
+  test "mnesia, redis, postgres authn/authz" do
+    path = "test/data/auth-builtin-redis-postgres1.json"
+    {:ok, converted_path} = TH.convert!(path)
+    on_exit(fn -> File.rm(converted_path) end)
+    :ok = TH.import!(converted_path)
+
+    # import application should start working
+    resp = api_req!(:get, "mqtt/retainer/messages")
+
+    assert %HTTPoison.Response{status_code: 200} = resp
   end
 end

@@ -1,0 +1,5 @@
+- dashbord user `dash_user`, password `dash_pass`
+- app user `app_id`, name `app_name`, secret `4mVZvVT9CnC6Z3AYdk9C07Ecz9AuBCLblb43kk69BcxbBhP`
+- 3 blacklisted entries: clientid, username, peerhost
+- mnesia, redis, postgres almost-default configs for authn and authz
+- ram retainer default config

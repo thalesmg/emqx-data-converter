@@ -109,6 +109,12 @@ After convertion, the output tarball contains a structure similar to this:
   {atomic, [emqx_authn_mnesia]}
   ```
 
+- If you have retained messages being imported (from `mnesia/emqx_retainer_message`), then, after importing that table with the command above, you must run:
+
+  ```sh
+  emqx ctl retainer reindex start
+  ```
+
 # Build
 
 ## Prerequisites
