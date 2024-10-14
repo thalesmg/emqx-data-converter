@@ -5,6 +5,8 @@ defmodule TH do
   require Logger
 
   @container_name "emqx-data-converter"
+  # exposed by docker
+  @api_port 48083
 
   def converter_path() do
     Path.absname("./emqx_data_converter")
@@ -92,7 +94,14 @@ defmodule TH do
     # stupid and ugly hack because, for unknown reasons, `emqx start` hangs for ~ 62
     # seconds when running before starting locally, but runs fine in CI...  🫠
     spawn_link(fn ->
-      run_in_container(cmd)
+      case run_in_container(cmd, stderr_to_stdout: true) do
+        {:ok, _} ->
+          :ok
+
+        {:error, exit_code, output} ->
+          IO.puts(output)
+          exit({:failed_to_start_emqx, exit_code, output})
+      end
     end)
 
     Enum.reduce_while(1..wait_s, :error, fn _, acc ->
@@ -200,11 +209,81 @@ defmodule TH do
       {:ok, out}
     end
   end
+
+  def kw_update_some(kw, key, fun) do
+    if Keyword.has_key?(kw, key) do
+      Keyword.update!(kw, key, fun)
+    else
+      kw
+    end
+  end
+
+  def parse_exunit_opts(argv) do
+    {opts, _pos_args} = OptionParser.parse!(argv, strict: [only: :keep])
+
+    opts
+    |> parse_only()
+  end
+
+  defp parse_only(opts) do
+    if filters = parse_filters(opts, :only) do
+      opts
+      |> Keyword.update(:include, filters, &(filters ++ &1))
+      |> Keyword.update(:exclude, [:test], &[:test | &1])
+    else
+      opts
+    end
+  end
+
+  defp parse_filters(opts, key) do
+    if Keyword.has_key?(opts, key) do
+      opts
+      |> Keyword.get_values(key)
+      |> ExUnit.Filters.parse()
+    end
+  end
+
+  @doc """
+  If the api user needs to be recreated, one may execute:
+
+  ```erlang
+  emqx_mgmt_auth:add_app(
+    <<"app_id">>,
+    <<"app_name">>,
+    <<"4mVZvVT9CnC6Z3AYdk9C07Ecz9AuBCLblb43kk69BcxbBhP">>,
+    <<"some description">>,
+    _Status = true,
+    _Expired = undefined).
+  ```
+  """
+  def api_req!(method, path, body \\ "", opts \\ []) do
+    api_user = "app_id"
+    api_pass = "4mVZvVT9CnC6Z3AYdk9C07Ecz9AuBCLblb43kk69BcxbBhP"
+    authn64 = Base.encode64("#{api_user}:#{api_pass}")
+
+    HTTPoison.request!(
+      method,
+      "http://localhost:#{@api_port}/api/v5/#{path}",
+      body,
+      [{"Authorization", "Basic #{authn64}"}]
+    )
+    |> Map.update!(:body, fn body ->
+      case Jason.decode(body) do
+        {:ok, json} ->
+          json
+
+        _ ->
+          body
+      end
+    end)
+  end
 end
+
+opts = System.argv() |> TH.parse_exunit_opts()
 
 Mix.install([{:httpoison, "2.2.1"}, {:jason, "1.4.4"}])
 
-ExUnit.start()
+ExUnit.start(opts)
 
 defmodule Tests do
   use ExUnit.Case
@@ -227,22 +306,6 @@ defmodule Tests do
 
       TH.import_table("emqx_app", outdir)
   """
-
-  # exposed by docker
-  @api_port 48083
-
-  def api_req!(method, path, body \\ "") do
-    api_user = "app_id"
-    api_pass = "4mVZvVT9CnC6Z3AYdk9C07Ecz9AuBCLblb43kk69BcxbBhP"
-    authn64 = Base.encode64("#{api_user}:#{api_pass}")
-
-    HTTPoison.request!(
-      method,
-      "http://localhost:#{@api_port}/api/v5/#{path}",
-      body,
-      [{"Authorization", "Basic #{authn64}"}]
-    )
-  end
 
   setup_all do
     {:ok, %{image: System.fetch_env!("EMQX_IMAGE")}}
@@ -269,7 +332,7 @@ defmodule Tests do
     :ok = TH.import!(converted_path)
 
     # import application should start working
-    resp = api_req!(:get, "mqtt/retainer/messages")
+    resp = TH.api_req!(:get, "mqtt/retainer/messages")
 
     assert %HTTPoison.Response{status_code: 200} = resp
   end
@@ -283,11 +346,85 @@ defmodule Tests do
 
     assert {:ok, _} = TH.run_in_container("docker-entrypoint.sh emqx ctl retainer reindex start")
 
-    resp = api_req!(:get, "mqtt/retainer/messages")
+    resp = TH.api_req!(:get, "mqtt/retainer/messages")
 
     assert %HTTPoison.Response{status_code: 200} = resp
-    messages = Jason.decode!(resp.body)
 
-    assert %{"data" => [_, _, _, _]} = messages
+    assert %{"data" => [_, _, _, _]} = resp.body
+  end
+
+  # A few rules that send data to bridges.
+  #   - kafka
+  #   - mqtt
+  #   - postgres
+  #   - http
+  #   - gcp pubsub producer
+  #   - redis (3 types)
+  #   - republish
+  #   - debug (inspect)
+  @tag :bridges
+  test "bridges 1" do
+    path = "test/data/bridges1.json"
+    {:ok, converted_path} = TH.convert!(path)
+    on_exit(fn -> File.rm(converted_path) end)
+    :ok = TH.import!(converted_path)
+
+    connectors =
+      TH.api_req!(:get, "connectors")
+      |> Map.fetch!(:body)
+
+    actions =
+      TH.api_req!(:get, "actions")
+      |> Map.fetch!(:body)
+
+    expected_connector_types =
+      MapSet.new([
+        "kafka_producer",
+        "mqtt",
+        "pgsql",
+        "http",
+        "gcp_pubsub_producer",
+        "redis"
+      ])
+
+    assert connectors |> Enum.map(& &1["type"]) |> Enum.into(MapSet.new()) ==
+             expected_connector_types
+
+    #   - kafka
+    #   - mqtt
+    #   - postgres
+    #   - http
+    #   - gcp pubsub producer
+    #   - redis (3 types)
+    assert length(connectors) == 8
+
+    redis_types =
+      connectors
+      |> Enum.filter(&(&1["type"] == "redis"))
+      |> Enum.map(&get_in(&1, ["parameters", "redis_type"]))
+      |> MapSet.new()
+
+    assert redis_types == MapSet.new(["single", "cluster", "sentinel"])
+
+    expected_action_types =
+      MapSet.new([
+        "kafka_producer",
+        "mqtt",
+        "pgsql",
+        "http",
+        "gcp_pubsub_producer",
+        "redis"
+      ])
+
+    assert actions |> Enum.map(& &1["type"]) |> Enum.into(MapSet.new()) == expected_action_types
+    assert length(actions) == 8
+
+    redis_types =
+      actions
+      |> Enum.filter(&(&1["type"] == "redis"))
+      |> Enum.map(&get_in(&1, ["parameters", "redis_type"]))
+      |> MapSet.new()
+
+    assert redis_types == MapSet.new(["single", "cluster", "sentinel"])
   end
 end
