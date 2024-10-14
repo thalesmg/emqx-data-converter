@@ -73,5 +73,5 @@ jobs:
           name: emqx-data-converter ${{ github.ref_name }}
           body: emqx-data-converter ${{ github.ref_name }}
           files: packages/*
-          draft: ${{ github.event_name != 'tag' }}
-          prerelease: ${{ github.event_name != 'tag' }}
+          draft: ${{ github.ref_type != 'tag' }}
+          prerelease: ${{ github.ref_type != 'tag' }}
