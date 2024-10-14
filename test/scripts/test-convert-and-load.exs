@@ -22,16 +22,19 @@ defmodule TH do
 
     data_files_dir = Keyword.get(opts, :data_files_dir)
 
-    {:ok, output} =
-      run(
-        converter_path(),
-        List.flatten([
-          "-o",
-          "/tmp",
-          wrap_if(["--data-files-dir", data_files_dir], !!data_files_dir),
-          input_filepath
-        ])
-      )
+    cmd =
+      List.flatten([
+        "-o",
+        "/tmp",
+        wrap_if(["--data-files-dir", data_files_dir], !!data_files_dir),
+        input_filepath
+      ])
+
+    Logger.debug(%{msg: "convertion_cmd", cmd: cmd})
+
+    {:ok, output} = run(converter_path(), cmd)
+
+    IO.puts(output)
 
     res = Regex.run(~r/backup file: (?<filepath>.+)/, output, capture: ["filepath"])
 
@@ -199,7 +202,7 @@ defmodule TH do
   end
 end
 
-Mix.install([{:httpoison, "2.2.1"}])
+Mix.install([{:httpoison, "2.2.1"}, {:jason, "1.4.4"}])
 
 ExUnit.start()
 
@@ -269,5 +272,22 @@ defmodule Tests do
     resp = api_req!(:get, "mqtt/retainer/messages")
 
     assert %HTTPoison.Response{status_code: 200} = resp
+  end
+
+  # Retained messages from ram copies.  Has 1 "real" message and 3 system messages.
+  test "retained messages : ram" do
+    path = "test/data/auth-builtin-redis-postgres1.json"
+    {:ok, converted_path} = TH.convert!(path, data_files_dir: "test/data/retainer_ram1")
+    on_exit(fn -> File.rm(converted_path) end)
+    :ok = TH.import!(converted_path)
+
+    assert {:ok, _} = TH.run_in_container("docker-entrypoint.sh emqx ctl retainer reindex start")
+
+    resp = api_req!(:get, "mqtt/retainer/messages")
+
+    assert %HTTPoison.Response{status_code: 200} = resp
+    messages = Jason.decode!(resp.body)
+
+    assert %{"data" => [_, _, _, _]} = messages
   end
 end
