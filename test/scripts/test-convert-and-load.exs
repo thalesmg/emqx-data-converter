@@ -64,20 +64,44 @@ defmodule TH do
     :ok
   end
 
-  def import!(input_filepath) do
-    outdir = "/opt/data/converted"
-
-    :ok = place_files(input_filepath, outdir)
-
+  def import!(backup_filepath) do
+    basename = Path.basename(backup_filepath)
+    container_filepath = "/tmp/#{basename}"
+    {:ok, _} = docker_cp(backup_filepath, container_filepath)
     Logger.info(%{msg: "starting_emqx"})
     :ok = start_emqx()
 
-    Enum.each(Path.wildcard("converted/mnesia/*"), fn table_path ->
-      :ok =
-        table_path
-        |> Path.basename()
-        |> import_table(outdir)
-    end)
+    # FIXME: after patching `emqx ctl data import` in EMQX itself to support placing
+    # `acl.conf` in the reight automatically, this won't be necessary.
+    place_acl_conf_file(container_filepath)
+
+    {:ok, output} =
+      run_in_container("docker-entrypoint.sh emqx ctl data import #{container_filepath}")
+
+    IO.puts(output)
+
+    if output =~ ~r"data has been imported successfully"i do
+      :ok
+    else
+      {:error, output}
+    end
+  end
+
+  # temporary hack (5.8.1 doesn't handle this new file)
+  def place_acl_conf_file(container_filepath) do
+    extracted_dir = "/tmp/extracted"
+
+    {:ok, output} =
+      run_in_container([
+        "mkdir -p #{extracted_dir}",
+        "tar -C #{extracted_dir} -xvf #{container_filepath}",
+        "mkdir -p data/authz/",
+        "cp #{extracted_dir}/*/authz/acl.conf data/authz/acl.conf"
+      ])
+
+    IO.puts(output)
+
+    :ok
   end
 
   def start_emqx(opts \\ []) do
@@ -198,6 +222,10 @@ defmodule TH do
       |> Enum.join(" ; ")
 
     run("docker", ["exec", @container_name, "bash", "-c", cmd], opts)
+  end
+
+  def docker_cp(from, to) do
+    run("docker", ["cp", from, @container_name <> ":" <> to])
   end
 
   def run(command, args, opts \\ []) do
