@@ -109,6 +109,12 @@ After convertion, the output tarball contains a structure similar to this:
   {atomic, [emqx_authn_mnesia]}
   ```
 
+- If you have retained messages being imported (from `mnesia/emqx_retainer_message`), then, after importing that table with the command above, you must run:
+
+  ```sh
+  emqx ctl retainer reindex start
+  ```
+
 # Build
 
 ## Prerequisites
@@ -153,6 +159,28 @@ cd /emqx-data-converter
 git config --global --add safe.directory '*'
 rebar3 escriptize
 _build/default/bin/emqx_data_converter --data-files-dir /input /input/emqx-export-2023-7-13-15-52-15.json
+```
+
+## Running tests
+
+To run the test suite locally, first compile the escript and copy it to the project root.
+
+```sh
+rebar3 escriptize
+cp _build/default/bin/emqx_data_converter ./
+```
+
+Then, run the script:
+
+```sh
+source test/scripts/env.sh
+test/scripts/test-convert-and-load.exs
+```
+
+If you want to run only tests with a specific tag, for example, only those tagged with `bridges` (i.e., those that have `@tag :bridges` above them):
+
+```sh
+test/scripts/test-convert-and-load.exs --only bridges
 ```
 
 # Bundle the `escript` with Erlang/OTP

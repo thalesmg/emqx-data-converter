@@ -1487,8 +1487,8 @@ with_common_connnector_fields(ResParams, ConnConf) ->
 
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
                           <<"backend_redis_", RedisType/binary>>, ResConf) ->
-    #{<<"cmd">> := Cmd} = Args,
-    redis_bridge(ActId, Cmd, ResId, RedisType, ResConf);
+    #{<<"cmd">> := _Cmd} = Args,
+    redis_action_resource(ActId, Args, ResId, RedisType, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS/binary>>, ResConf)
   when RDBMS =:= <<"pgsql">>;
        RDBMS =:= <<"mysql">>;
@@ -1592,18 +1592,30 @@ common_args_to_res_opts(Args) ->
             ResOpts
     end.
 
-redis_bridge(ActionId, Cmd, ResId, RedisType, ResConf) ->
-    BridgeName = bridge_name(ResId, ActionId),
+redis_action_resource(ActionId, #{<<"cmd">> := Cmd} = Args, ResId, RedisType, ResConf) ->
     CommonFields = [<<"server">>, <<"servers">>, <<"pool_size">>,
                     <<"database">>, <<"password">>, <<"sentinel">>],
-    OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
-    OutConf1 = case RedisType of
-                   <<"cluster">> -> maps:remove(<<"database">>, OutConf);
-                   _  -> OutConf
-               end,
-    OutConf2 = OutConf1#{<<"command_template">> => [bin(L) || L <- string:lexemes(str(Cmd), " ")],
-                         <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)},
-    {<<"redis_", RedisType/binary>>, BridgeName, OutConf2}.
+    ConnParams0 = filter_out_empty(maps:with(CommonFields, ResConf)),
+    ConnParams1 = case RedisType of
+        <<"cluster">> -> maps:remove(<<"database">>, ConnParams0);
+        _  -> ConnParams0
+    end,
+    ConnParams = ConnParams1#{<<"redis_type">> => RedisType},
+    ConnectorConf = #{
+        <<"parameters">> => ConnParams,
+        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)
+    },
+    ActionParams =
+        #{ <<"redis_type">> => RedisType
+         , <<"command_template">> => [bin(L) || L <- string:lexemes(str(Cmd), " ")]
+         },
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_res_opts(Args)
+    },
+    Action = {<<"redis">>, make_action_name(ResId), ActionConf},
+    Connector = {<<"redis">>, make_connector_name(ResId), ConnectorConf},
+    {Action, Connector}.
 
 sqldb_action_resource(RDBMS, _ActionId, #{<<"sql">> := SQL} = Args, ResId, ResConf) ->
     ResConf1 = case ResConf of
