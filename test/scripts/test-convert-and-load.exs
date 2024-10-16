@@ -49,31 +49,12 @@ defmodule TH do
     end
   end
 
-  def place_files(input_filepath, outdir) do
-    Logger.info(%{input: input_filepath, msg: "importing_input"})
-    File.mkdir_p!("converted")
-    {:ok, _} = run("bash", ["-c", "tar -C converted -xvf #{input_filepath} --strip-components=1"])
-
-    {:ok, _} =
-      run_in_container([
-        "cp #{outdir}/cluster.hocon data/configs/cluster.hocon",
-        "mkdir -p data/authz/",
-        "cp #{outdir}/authz/acl.conf data/authz/acl.conf"
-      ])
-
-    :ok
-  end
-
   def import!(backup_filepath) do
     basename = Path.basename(backup_filepath)
     container_filepath = "/tmp/#{basename}"
     {:ok, _} = docker_cp(backup_filepath, container_filepath)
     Logger.info(%{msg: "starting_emqx"})
     :ok = start_emqx()
-
-    # FIXME: after patching `emqx ctl data import` in EMQX itself to support placing
-    # `acl.conf` in the reight automatically, this won't be necessary.
-    place_acl_conf_file(container_filepath)
 
     {:ok, output} =
       run_in_container("docker-entrypoint.sh emqx ctl data import #{container_filepath}")
@@ -85,23 +66,6 @@ defmodule TH do
     else
       {:error, output}
     end
-  end
-
-  # temporary hack (5.8.1 doesn't handle this new file)
-  def place_acl_conf_file(container_filepath) do
-    extracted_dir = "/tmp/extracted"
-
-    {:ok, output} =
-      run_in_container([
-        "mkdir -p #{extracted_dir}",
-        "tar -C #{extracted_dir} -xvf #{container_filepath}",
-        "mkdir -p data/authz/",
-        "cp #{extracted_dir}/*/authz/acl.conf data/authz/acl.conf"
-      ])
-
-    IO.puts(output)
-
-    :ok
   end
 
   def start_emqx(opts \\ []) do
@@ -326,7 +290,6 @@ defmodule Tests do
       outdir = "/opt/data/converted"
       path = "test/data/barebones.json"
       {:ok, converted_path} = TH.convert!(path)
-      TH.place_files(converted_path, outdir)
 
   After this, `docker exec -it emqx-data-converter bash`
 
