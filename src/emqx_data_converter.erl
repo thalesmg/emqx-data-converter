@@ -1469,10 +1469,10 @@ with_common_connnector_fields(ResParams, ConnConf) ->
 
 -define(DATA_ACTION, <<"data_to_", _/binary>>).
 
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
                           <<"backend_redis_", RedisType/binary>>, ResConf) ->
     #{<<"cmd">> := _Cmd} = Args,
-    redis_action_resource(ActId, Args, ResId, RedisType, ResConf);
+    redis_action_resource(Args, ResId, RedisType, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS/binary>>, ResConf)
   when RDBMS =:= <<"pgsql">>;
        RDBMS =:= <<"mysql">>;
@@ -1481,10 +1481,9 @@ do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS
        RDBMS =:= <<"matrix">>;
        RDBMS =:= <<"timescale">> ->
     sqldb_action_resource(RDBMS, ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
                           <<"backend_mongo_", MongoType/binary>>, ResConf) ->
-    #{<<"payload_tmpl">> := PayloadTmpl, <<"collection">> := Collection} = Args,
-    mongodb_bridge(ActId, PayloadTmpl, Collection, ResId, MongoType, ResConf);
+    mongodb_action_resource(Args, ResId, MongoType, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
     cassandra_bridge(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
@@ -1576,7 +1575,7 @@ common_args_to_res_opts(Args) ->
             ResOpts
     end.
 
-redis_action_resource(ActionId, #{<<"cmd">> := Cmd} = Args, ResId, RedisType, ResConf) ->
+redis_action_resource(#{<<"cmd">> := Cmd} = Args, ResId, RedisType, ResConf) ->
     CommonFields = [<<"server">>, <<"servers">>, <<"pool_size">>,
                     <<"database">>, <<"password">>, <<"sentinel">>],
     ConnParams0 = filter_out_empty(maps:with(CommonFields, ResConf)),
@@ -1632,39 +1631,55 @@ maybe_add_ssl_sql(RDBMS, OutConf, _ResConf) when RDBMS =:= <<"oracle">>;
 maybe_add_ssl_sql(_RDBMS, OutConf, ResConf) ->
     OutConf#{<<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)}.
 
-mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
+mongodb_action_resource(#{<<"payload_tmpl">> := PayloadTemplate, <<"collection">> := Collection} = Args, ResId, MongoType, ResConf) ->
+    ConnParams0 =
+        case MongoType of
+            <<"single">> ->
+                 Params0 = maps:with([<<"servers">>, <<"w_mode">>], ResConf),
+                 emqx_data_converter_utils:rename(<<"servers">>, <<"server">>, Params0);
+            <<"rs">> ->
+                 Params0 = maps:with(
+                             [ <<"servers">>
+                             , <<"w_mode">>
+                             , <<"r_mode">>
+                             , <<"rs_set_name">>
+                             ], ResConf),
+                 emqx_data_converter_utils:rename(<<"rs_set_name">>, <<"replica_set_name">>, Params0);
+            <<"sharded">> ->
+                 maps:with(
+                   [ <<"servers">>
+                   , <<"w_mode">>
+                   ], ResConf)
+        end,
+    ConnParams = ConnParams0#{<<"mongo_type">> => MongoType},
     Username = maps:get(<<"login">>, ResConf, <<>>),
     CommonFields = [<<"auth_source">>,
                     <<"pool_size">>,
                     <<"database">>,
                     <<"password">>,
-                    <<"w_mode">>,
-                    <<"srv_record">>,
-                    <<"servers">>],
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = case MongoType of
-                   <<"single">> ->
-                       {Server, Conf} = maps:take(<<"servers">>, OutConf),
-                       Conf#{<<"server">> => Server};
-                   <<"rs">> ->
-                       RMode = maps:get(<<"r_mode">>, ResConf, <<>>),
-                       OutConf#{<<"r_mode">> => RMode,
-                                <<"replica_set_name">> => maps:get(<<"rs_set_name">>, ResConf)};
-                   <<"sharded">> -> OutConf
-               end,
-    OutConf2 = OutConf1#{<<"username">> => Username,
-                         <<"collection">> => Collection,
-                         <<"payload_template">> => PayloadTempl,
-                         <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf),
-                         %% required field in EMQX 5.1 or later
-                         <<"resource_opts">> => #{}},
-    OutConf3 = case ResConf of
+                    <<"srv_record">>],
+    ConnConf0 = maps:with(CommonFields, ResConf),
+    ConnConf1 = ConnConf0#{
+        <<"username">> => Username,
+        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)},
+    ConnConf2 = case ResConf of
                    #{<<"connectTimeoutMS">> := Timeout} when is_integer(Timeout) ->
                        TimeoutBin = <<(integer_to_binary(Timeout))/binary, "ms">>,
-                       OutConf2#{<<"topology">> => #{<<"connect_timeout_ms">> => TimeoutBin}};
-                   _ -> OutConf2
+                       ConnConf1#{<<"topology">> => #{<<"connect_timeout_ms">> => TimeoutBin}};
+                   _ -> ConnConf1
                end,
-    {<<"mongodb_", MongoType/binary>>, bridge_name(ResId, ActionId), filter_out_empty(OutConf3)}.
+    ConnConf = ConnConf2#{<<"parameters">> => ConnParams},
+    Connector = {<<"mongodb">>, make_connector_name(ResId), ConnConf},
+    ActionParams = #{
+        <<"collection">> => Collection,
+        <<"payload_template">> => PayloadTemplate
+    },
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_res_opts(Args)
+    },
+    Action = {<<"mongodb">>, make_action_name(ResId), ActionConf},
+    {Action, Connector}.
 
 cassandra_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"nodes">> := Servers} = ResConf) ->
     CommonFields = [<<"keyspace">>,

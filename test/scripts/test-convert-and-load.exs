@@ -248,7 +248,7 @@ defmodule TH do
     _Expired = undefined).
   ```
   """
-  def api_req!(method, path, body \\ "", opts \\ []) do
+  def api_req!(method, path, body \\ "", _opts \\ []) do
     api_user = "app_id"
     api_pass = "4mVZvVT9CnC6Z3AYdk9C07Ecz9AuBCLblb43kk69BcxbBhP"
     authn64 = Base.encode64("#{api_user}:#{api_pass}")
@@ -375,6 +375,7 @@ defmodule Tests do
         "pgsql",
         "http",
         "gcp_pubsub_producer",
+        "mongodb",
         "redis"
       ])
 
@@ -387,7 +388,10 @@ defmodule Tests do
     #   - http
     #   - gcp pubsub producer
     #   - redis (3 types)
-    assert length(connectors) == 8
+    #   - mongodb (3 types)
+    num_actions = 11
+
+    assert length(connectors) == num_actions
 
     redis_types =
       connectors
@@ -404,11 +408,12 @@ defmodule Tests do
         "pgsql",
         "http",
         "gcp_pubsub_producer",
+        "mongodb",
         "redis"
       ])
 
     assert actions |> Enum.map(& &1["type"]) |> Enum.into(MapSet.new()) == expected_action_types
-    assert length(actions) == 8
+    assert length(actions) == num_actions
 
     redis_types =
       actions

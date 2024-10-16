@@ -1,6 +1,6 @@
 -module(emqx_data_converter_utils).
 
--export([random_id/1, deep_merge/2]).
+-export([random_id/1, deep_merge/2, rename/3]).
 
 random_id(Len) ->
     BitLen = Len * 4,
@@ -27,6 +27,14 @@ deep_merge(BaseMap, NewMap) ->
         BaseMap
     ),
     maps:merge(MergedBase, maps:with(NewKeys, NewMap)).
+
+rename(OldKey, NewKey, Map) ->
+    case maps:find(OldKey, Map) of
+        {ok, Value} ->
+            maps:put(NewKey, Value, maps:remove(OldKey, Map));
+        error ->
+            Map
+    end.
 
 %%====================================================================
 %% Internal functions
