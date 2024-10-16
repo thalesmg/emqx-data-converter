@@ -1507,8 +1507,8 @@ do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_tdengine
 %%    %% TODO: looks like it may need rewriting rule sql to port it to EMQX5.1
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, ResConf) ->
     webhook_action_resource(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
-    pulsar_producer_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
+    pulsar_producer_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
     rabbit_producer_bridge(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
@@ -1560,7 +1560,7 @@ bridge_name(ResourceId, ActionId) ->
 filter_out_empty(Map) ->
     maps:filter(fun(_K, V) -> V =/= <<>> end, Map).
 
-common_args_to_res_opts(Args) ->
+common_args_to_action_res_opts(Args) ->
     %% Async is default for both 4.4 and 5.1+
     Mode = maps:get(<<"insert_mode">>, Args, <<"async">>),
     ResOpts = #{<<"query_mode">> => Mode},
@@ -1594,7 +1594,7 @@ redis_action_resource(#{<<"cmd">> := Cmd} = Args, ResId, RedisType, ResConf) ->
          },
     ActionConf = #{
         <<"parameters">> => ActionParams,
-        <<"resource_opts">> => common_args_to_res_opts(Args)
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
     },
     Action = {<<"redis">>, make_action_name(ResId), ActionConf},
     Connector = {<<"redis">>, make_connector_name(ResId), ConnectorConf},
@@ -1617,7 +1617,7 @@ sqldb_action_resource(RDBMS, _ActionId, #{<<"sql">> := SQL} = Args, ResId, ResCo
                    ],
     ActionConfs = #{
         <<"parameters">> => #{<<"sql">> => SQL},
-        <<"resource_opts">> => common_args_to_res_opts(Args)
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
     },
     OutConnConf = filter_out_empty(maps:with(CommonFields, ResConf1)),
     OutConnConf1 = maybe_add_ssl_sql(RDBMS, OutConnConf, ResConf1),
@@ -1676,7 +1676,7 @@ mongodb_action_resource(#{<<"payload_tmpl">> := PayloadTemplate, <<"collection">
     },
     ActionConf = #{
         <<"parameters">> => ActionParams,
-        <<"resource_opts">> => common_args_to_res_opts(Args)
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
     },
     Action = {<<"mongodb">>, make_action_name(ResId), ActionConf},
     {Action, Connector}.
@@ -1685,7 +1685,7 @@ cassandra_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"nodes">> := Se
     ActionParams = #{<<"cql">> => SQL},
     ActionConf = #{
         <<"parameters">> => ActionParams,
-        <<"resource_opts">> => common_args_to_res_opts(Args)
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
     },
     Action = {<<"cassandra">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"keyspace">>,
@@ -1709,7 +1709,7 @@ clickhouse_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"server">> :=
                         <<"username">> => Username,
                         <<"url">> => URL,
                         <<"sql">> => SQL,
-                       <<"resource_opts">> => common_args_to_res_opts(Args)},
+                       <<"resource_opts">> => common_args_to_action_res_opts(Args)},
     {<<"clickhouse">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
 dynamo_bridge(ActionId, Table, ResId, ResConf) ->
@@ -1738,7 +1738,7 @@ hstreamdb_bridge(ActionId, Args, ResId, #{<<"server">> := URL} = ResConf) ->
                         <<"partition_key">> => PartitionKey,
                         <<"record_template">> => PayloadTempl,
                         <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf),
-                        <<"resource_opts">> => common_args_to_res_opts(Args)},
+                        <<"resource_opts">> => common_args_to_action_res_opts(Args)},
     {<<"hstreamdb">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
 influxdb_bridge(ActId, ActArgs, InfluxVer, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
@@ -1758,7 +1758,7 @@ influxdb_bridge(ActId, ActArgs, InfluxVer, ResId, #{<<"host">> := H, <<"port">> 
     OutConf1 = OutConf#{<<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
                         <<"ssl">> => SSL,
                         <<"write_syntax">> => WriteSyntax1,
-                       <<"resource_opts">> => common_args_to_res_opts(ActArgs)},
+                       <<"resource_opts">> => common_args_to_action_res_opts(ActArgs)},
     {InfluxVer1, OutConf2} =
         case InfluxVer of
             <<>> ->
@@ -1800,7 +1800,7 @@ tdengine_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"host">> := H, 
     OutConf1 = OutConf#{<<"sql">> => SQL,
                         <<"database">> => maps:get(<<"db_name">>, Args, <<>>),
                         <<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
-                        <<"resource_opts">> => common_args_to_res_opts(Args)},
+                        <<"resource_opts">> => common_args_to_action_res_opts(Args)},
     {<<"tdengine">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
 
 webhook_action_resource(_ActionId, Args, ResId, ResConf) ->
@@ -1826,7 +1826,7 @@ webhook_action_resource(_ActionId, Args, ResId, ResConf) ->
     Connector = {<<"http">>, make_connector_name(ResId), filter_out_empty(ConnConf1)},
     {Action, Connector}.
 
-pulsar_producer_bridge(ActionId, #{<<"topic">> := Topic} = Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
+pulsar_producer_action_resource(#{<<"topic">> := Topic} = Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
     Authn = case maps:get(<<"authentication_type">>, ResConf, <<>>) of
                 <<"none">> -> <<"none">>;
                 <<>> -> <<"none">>;
