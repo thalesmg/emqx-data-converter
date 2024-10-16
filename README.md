@@ -76,8 +76,6 @@ After convertion, the output tarball contains a structure similar to this:
 
 ```
 /tmp/emqx-export-2024-10-10-14-27-58.171/
-├── authz
-│   └── acl.conf
 ├── cluster.hocon
 ├── META.hocon
 └── mnesia
@@ -89,24 +87,14 @@ After convertion, the output tarball contains a structure similar to this:
     └── emqx_retainer_message
 ```
 
-- `authz/acl.conf` must be copied to `$EMQX_DATA_DIR/authz/acl.conf`, where `$EMQX_DATA_DIR` is EMQX's data directory and depends on the installation method and system (typically `/var/lib/emqx/data` or `/opt/emqx/data`).
-- `cluster.hocon` must be copied to `$EMQX_DATA_DIR/configs/cluster.hocon`.
-- Each file in `mnesia` dir must be imported with the following command:
+> [!TIP]
+> There's no need to extract this file.  Just place it somewhere where `emqx` application
+> user may read it.
+
+- To import this file, simply run:
 
   ```sh
-  emqx eval 'mnesia:restore("/full/path/to/file", []).'
-  ```
-
-  So, for example:
-
-  ```sh
-  emqx eval 'mnesia:restore("/tmp/emqx-export-2024-10-10-14-27-58.171/mnesia/emqx_authn_mnesia", []).'
-  ```
-
-  Yields, when successful:
-
-  ```
-  {atomic, [emqx_authn_mnesia]}
+  emqx ctl data import full/path/to/emqx-export-2024-10-10-14-27-58.171.tar.gz
   ```
 
 - If you have retained messages being imported (from `mnesia/emqx_retainer_message`), then, after importing that table with the command above, you must run:
