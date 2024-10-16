@@ -1486,8 +1486,8 @@ do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
     mongodb_action_resource(Args, ResId, MongoType, ResConf);
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
     cassandra_action_resource(Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
-    clickhouse_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
+    clickhouse_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
     #{<<"table">> := Table} = Args,
     dynamo_bridge(ActId, Table, ResId, ResConf);
@@ -1699,18 +1699,21 @@ cassandra_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"nodes">> := Se
     Connector = {<<"cassandra">>, make_connector_name(ResId), ConnConf},
     {Action, Connector}.
 
-clickhouse_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"server">> := URL} = ResConf) ->
+clickhouse_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"server">> := URL} = ResConf) ->
+    ActionParams = #{<<"sql">> => SQL},
+    ActionConf = #{<<"parameters">> => ActionParams,
+                   <<"resource_opts">> => common_args_to_action_res_opts(Args)},
+    Action = {<<"clickhouse">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"database">>,
                     <<"pool_size">>],
     Passw = maps:get(<<"key">>, ResConf, <<>>),
     Username = maps:get(<<"user">>, ResConf, <<>>),
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = OutConf#{<<"password">> => Passw,
+    ConnConf0 = maps:with(CommonFields, ResConf),
+    ConnConf = ConnConf0#{<<"password">> => Passw,
                         <<"username">> => Username,
-                        <<"url">> => URL,
-                        <<"sql">> => SQL,
-                       <<"resource_opts">> => common_args_to_action_res_opts(Args)},
-    {<<"clickhouse">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+                        <<"url">> => URL},
+    Connector = {<<"clickhouse">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 dynamo_bridge(ActionId, Table, ResId, ResConf) ->
     CommonFields = [<<"pool_size">>,

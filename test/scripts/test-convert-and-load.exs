@@ -378,6 +378,7 @@ defmodule Tests do
         "mongodb",
         "cassandra",
         "pulsar",
+        "clickhouse",
         "redis"
       ])
 
@@ -393,7 +394,8 @@ defmodule Tests do
     #   - mongodb (3 types)
     #   - cassandra
     #   - pulsar
-    num_actions = 13
+    #   - clickhouse
+    num_actions = 14
 
     assert length(connectors) == num_actions
 
@@ -415,6 +417,7 @@ defmodule Tests do
         "mongodb",
         "cassandra",
         "pulsar",
+        "clickhouse",
         "redis"
       ])
 
