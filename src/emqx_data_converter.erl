@@ -1827,17 +1827,6 @@ webhook_action_resource(_ActionId, Args, ResId, ResConf) ->
     {Action, Connector}.
 
 pulsar_producer_action_resource(#{<<"topic">> := Topic} = Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
-    Authn = case maps:get(<<"authentication_type">>, ResConf, <<>>) of
-                <<"none">> -> <<"none">>;
-                <<>> -> <<"none">>;
-                <<"basic">> ->
-                    [User, Pass] = binary:split(maps:get(<<"secret">>, ResConf), <<":">>),
-                    #{<<"username">> => User, <<"password">> => Pass};
-                <<"token">> ->
-                    #{<<"jwt">> => maps:get(<<"jwt">>, ResConf)}
-            end,
-    CommonFields = [<<"compression">>,<<"sync_timeout">>, <<"send_bufer">>, <<"batch_size">>],
-    OutConf = maps:with(CommonFields, ResConf),
     Key = key_to_template(maps:get(<<"key">>, Args, <<>>)),
     Tmpl = maps:get(<<"payload_tmpl">>, Args, <<>>),
     Msg = put_unless_empty(<<"value">>, Tmpl, #{<<"key">> => Key}),
@@ -1846,25 +1835,45 @@ pulsar_producer_action_resource(#{<<"topic">> := Topic} = Args, ResId, #{<<"serv
                  <<"segment_bytes">> => maps:get(<<"segment_bytes">>, Args, <<>>),
                  <<"per_partition_limit">> => maps:get(<<"max_total_bytes">>, Args, <<>>)
                 }),
+    ActionParams0 =
+        maps:with(
+          [ <<"sync_timeout">>
+          , <<"compression">>
+          , <<"send_buffer">>
+          , <<"batch_size">>
+          ],
+          ResConf
+         ),
+    ActionParams = filter_out_empty(ActionParams0#{
+        <<"message">> => Msg,
+        <<"pulsar_topic">> => Topic,
+        <<"buffer">> => Buffer,
+        <<"retention_period">> => maps:get(<<"retention_period">>, Args, <<>>),
+        <<"strategy">> => maps:get(<<"strategy">>, Args, <<>>)
+    }),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"pulsar">>, make_action_name(ResId), ActionConf},
+    Authn = case maps:get(<<"authentication_type">>, ResConf, <<"none">>) of
+                <<"none">> ->
+                    <<"none">>;
+                <<"basic">> ->
+                    [User, Pass] = binary:split(maps:get(<<"secret">>, ResConf), <<":">>),
+                    #{<<"username">> => User, <<"password">> => Pass};
+                <<"token">> ->
+                    #{<<"jwt">> => maps:get(<<"jwt">>, ResConf)}
+            end,
     IsSslEnabled = lists:any(fun(B) -> B =:= true end,
         [infer_ssl_from_uri(Uri) || Uri <- string:lexemes(Servers, ", ")]),
-    OutConf1 = OutConf#{<<"servers">> => Servers,
-                        <<"authentication">> => Authn,
-                        <<"ssl">> => convert_ssl_opts(IsSslEnabled, ResConf),
-                        <<"pulsar_topic">> => Topic,
-                        <<"strategy">> => maps:get(<<"strategy">>, Args, <<>>),
-                        <<"message">> => Msg,
-                        <<"buffer">> => Buffer,
-                        <<"retention_period">> => maps:get(<<"retention_period">>, Args, <<>>)
-                       },
-    case Args of
-        #{<<"type">> := <<"sync">>} ->
-            log_warning(
-              "sync Pulsar bridge mode is not supported in EMQX 5.1 or later,"
-              " async mode will be used");
-        _ -> ok
-    end,
-    {<<"pulsar_producer">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf1 = #{<<"servers">> => Servers,
+                  <<"authentication">> => Authn,
+                  <<"ssl">> => convert_ssl_opts(IsSslEnabled, ResConf)
+                 },
+    ConnConf = filter_out_empty(ConnConf1),
+    Connector = {<<"pulsar">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 %% Pulsar, Kafka producer
 key_to_template(<<"none">>) -> '$absent';

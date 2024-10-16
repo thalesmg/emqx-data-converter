@@ -377,6 +377,7 @@ defmodule Tests do
         "gcp_pubsub_producer",
         "mongodb",
         "cassandra",
+        "pulsar",
         "redis"
       ])
 
@@ -391,7 +392,8 @@ defmodule Tests do
     #   - redis (3 types)
     #   - mongodb (3 types)
     #   - cassandra
-    num_actions = 12
+    #   - pulsar
+    num_actions = 13
 
     assert length(connectors) == num_actions
 
@@ -412,6 +414,7 @@ defmodule Tests do
         "gcp_pubsub_producer",
         "mongodb",
         "cassandra",
+        "pulsar",
         "redis"
       ])
 
