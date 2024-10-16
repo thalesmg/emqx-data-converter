@@ -1491,8 +1491,8 @@ do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_clickho
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
     #{<<"table">> := Table} = Args,
     dynamo_bridge(ActId, Table, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
-    hstreamdb_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
+    hstreamdb_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
                           <<"backend_influxdb_http", InfluxVer/binary>>, ResConf) ->
     log_warning(
@@ -1724,25 +1724,33 @@ dynamo_bridge(ActionId, Table, ResId, ResConf) ->
     OutConf1 = OutConf#{<<"table">> => Table},
     {<<"dynamo">>,  bridge_name(ResId, ActionId), OutConf1}.
 
-hstreamdb_bridge(ActionId, Args, ResId, #{<<"server">> := URL} = ResConf) ->
+hstreamdb_action_resource(Args, ResId, #{<<"server">> := URL} = ResConf) ->
     #{<<"stream">> := Stream, <<"payload_tmpl">> := PayloadTempl} = Args,
-    CommonFields = [<<"pool_size">>],
+    ActionParams = filter_out_empty(#{
+        <<"stream">> => Stream,
+        <<"record_template">> => PayloadTempl,
+        <<"aggregation_pool_size">> => maps:get(<<"aggregation_pool_size">>, Args, <<>>),
+        <<"writer_pool_size">> => maps:get(<<"writer_pool_size">>, Args, <<>>),
+        <<"partition_key">> => maps:get(<<"partitioning_key">>, Args, <<>>)
+    }),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"hstreamdb">>, make_action_name(ResId), ActionConf},
     GRPCTimeout = case ResConf of
                       #{<<"grpc_timeout">> := T} when is_integer(T) ->
                           <<(integer_to_binary(T))/binary, "ms">>;
                       _ ->
                           <<>>
                   end,
-    PartitionKey = maps:get(<<"partitioning_key">>, Args, <<>>),
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = OutConf#{<<"url">> => URL,
-                        <<"grpc_timeout">> => GRPCTimeout,
-                        <<"stream">> => Stream,
-                        <<"partition_key">> => PartitionKey,
-                        <<"record_template">> => PayloadTempl,
-                        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf),
-                        <<"resource_opts">> => common_args_to_action_res_opts(Args)},
-    {<<"hstreamdb">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf1 =
+        #{<<"url">> => URL,
+          <<"grpc_timeout">> => GRPCTimeout,
+          <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)},
+    ConnConf = filter_out_empty(ConnConf1),
+    Connector = {<<"hstreamdb">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 influxdb_bridge(ActId, ActArgs, InfluxVer, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
     CommonFields = [<<"precision">>],

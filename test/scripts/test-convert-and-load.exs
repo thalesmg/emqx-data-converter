@@ -379,6 +379,7 @@ defmodule Tests do
         "cassandra",
         "pulsar",
         "clickhouse",
+        "hstreamdb",
         "redis"
       ])
 
@@ -395,7 +396,8 @@ defmodule Tests do
     #   - cassandra
     #   - pulsar
     #   - clickhouse
-    num_actions = 14
+    #   - hstreamdb
+    num_actions = 15
 
     assert length(connectors) == num_actions
 
@@ -418,6 +420,7 @@ defmodule Tests do
         "cassandra",
         "pulsar",
         "clickhouse",
+        "hstreamdb",
         "redis"
       ])
 
