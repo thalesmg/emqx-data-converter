@@ -1484,8 +1484,8 @@ do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
                           <<"backend_mongo_", MongoType/binary>>, ResConf) ->
     mongodb_action_resource(Args, ResId, MongoType, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
-    cassandra_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
+    cassandra_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
     clickhouse_bridge(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
@@ -1681,17 +1681,23 @@ mongodb_action_resource(#{<<"payload_tmpl">> := PayloadTemplate, <<"collection">
     Action = {<<"mongodb">>, make_action_name(ResId), ActionConf},
     {Action, Connector}.
 
-cassandra_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"nodes">> := Servers} = ResConf) ->
+cassandra_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"nodes">> := Servers} = ResConf) ->
+    ActionParams = #{<<"cql">> => SQL},
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_res_opts(Args)
+    },
+    Action = {<<"cassandra">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"keyspace">>,
                     <<"password">>,
                     <<"pool_size">>,
                     <<"username">>],
-    OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
-    OutConf1 = OutConf#{<<"servers">> => Servers,
-                        <<"cql">> => SQL,
-                        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf),
-                        <<"resource_opts">> => common_args_to_res_opts(Args)},
-    {<<"cassandra">>, bridge_name(ResId, ActionId), OutConf1}.
+    ConnConf0 = filter_out_empty(maps:with(CommonFields, ResConf)),
+    ConnConf = ConnConf0#{
+        <<"servers">> => Servers,
+        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)},
+    Connector = {<<"cassandra">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 clickhouse_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"server">> := URL} = ResConf) ->
     CommonFields = [<<"database">>,
