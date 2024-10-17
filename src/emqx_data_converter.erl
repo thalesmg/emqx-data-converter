@@ -1510,8 +1510,8 @@ do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_pulsar">
     pulsar_producer_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
     rabbit_producer_action_resource(Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
-    rocket_producer_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
+    rocket_producer_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_kafka">>, ResConf) ->
     kafka_action_resource(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_gcp_pubsub">>, ResConf) ->
@@ -1967,23 +1967,39 @@ rabbit_producer_action_resource(Args, ResId, #{<<"server">> := Server} = ResConf
     Connector = {<<"rabbitmq">>, make_connector_name(ResId), ConnConf},
     {Action, Connector}.
 
-rocket_producer_bridge(ActionId, Args, ResId, ResConf) ->
-    CommonFields = [<<"servers">>, <<"send_buffer">>,
-                    <<"refresh_interval">>, <<"sync_timeout">>,
-                    <<"secret_key">>, <<"access_key">>, <<"security_token">>],
-    OutConf = maps:with(CommonFields, ResConf),
-    maybe_warn_not_supported("RocketMQ bridge", "namespace", maps:get(<<"namespace">>, ResConf, <<>>)),
-    maybe_warn_not_supported("RocketMQ bridge", "key", maps:get(<<"key">>, ResConf, <<>>)),
-    maybe_warn_not_supported("RocketMQ bridge",
-                             "strategy",
-                             maps:get(<<"strategy">>, ResConf, <<>>),
-                             [<<>>, <<"roundrobin">>]),
-    ResOpts = filter_out_empty(#{<<"query_mode">> => maps:get(<<"type">>, Args, <<>>),
-                                 <<"batch_size">> => maps:get(<<"batch_size">>, Args, <<>>)}),
-    OutConf1 = OutConf#{<<"resource_opts">> => ResOpts,
-                        <<"topic">> => maps:get(<<"topic">>, Args),
-                        <<"template">> => maps:get(<<"payload_tmpl">>, Args, <<>>)},
-    {<<"rocketmq">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+rocket_producer_action_resource(Args, ResId, ResConf) ->
+    ActionParams0 =
+        maps:with(
+          [ <<"send_buffer">>
+          , <<"refresh_interval">>
+          , <<"sync_timeout">>
+          ],
+          ResConf),
+    ActionParams = filter_out_empty(ActionParams0#{
+        <<"topic">> => maps:get(<<"topic">>, Args),
+        <<"template">> => maps:get(<<"payload_tmpl">>, Args, <<>>),
+        <<"strategy">> => get_and_maybe_warn_not_supported(
+                            "RocketMQ bridge",
+                            <<"strategy">>,
+                            maps:get(<<"strategy">>, Args, <<>>),
+                            [<<>>, <<"roundrobin">>])
+    }),
+    get_and_maybe_warn_not_supported("RocketMQ bridge", "key", maps:get(<<"key">>, ResConf, <<>>)),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"rocketmq">>, make_action_name(ResId), ActionConf},
+    CommonFields =
+        [ <<"servers">>
+        , <<"secret_key">>
+        , <<"access_key">>
+        , <<"security_token">>
+        , <<"namespace">>
+        ],
+    ConnConf = maps:with(CommonFields, ResConf),
+    Connector = {<<"rocketmq">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 kafka_action_resource(_ActionId, Args, ResId, ResConf) ->
     ConnectorType = <<"kafka_producer">>,
@@ -2190,17 +2206,19 @@ kafka_auth(<<"KERBEROS">>, ResConf) ->
             '$absent'
     end.
 
-maybe_warn_not_supported(ResourceDesc, Key, Val) ->
-    maybe_warn_not_supported(ResourceDesc, Key, Val, [<<>>]).
-maybe_warn_not_supported(ResourceDesc, Key, Val, Supported) ->
-    case lists:member(string:trim(Val), Supported) of
+get_and_maybe_warn_not_supported(ResourceDesc, Key, Val) ->
+    get_and_maybe_warn_not_supported(ResourceDesc, Key, Val, [<<>>]).
+get_and_maybe_warn_not_supported(ResourceDesc, Key, Val0, Supported) ->
+    Val = string:trim(Val0),
+    case lists:member(Val, Supported) of
         true ->
-            ok;
+            Val;
         false ->
             log_warning(
               "Resource: \"~s\" has field: \"~s\"=\"~s\", which is not supported "
               "in EMQX 5.1 or later",
-              [ResourceDesc, Key, Val])
+              [ResourceDesc, Key, Val]),
+            <<>>
     end.
 
 infer_ssl_from_uri(Url) when is_binary(Url) ->
