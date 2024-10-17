@@ -1536,15 +1536,29 @@ resource_by_id(ResId, Resources) ->
 
 make_action_name(ResourceId) ->
     make_component_name(ResourceId, <<"resource:">>, <<"action_">>).
+
 make_connector_name(ResourceId) ->
     make_component_name(ResourceId, <<"resource:">>, <<"connector_">>).
+
 make_component_name(ResourceId, OldPrefix, Prefix) ->
     ResourceId1 = case string:prefix(ResourceId, OldPrefix) of
                       nomatch -> ResourceId;
                       Id -> Id
                   end,
     ResourceId2 = binary:replace(ResourceId1, <<":">>, <<"_">>, [global]),
-    <<Prefix/binary, ResourceId2/binary>>.
+    N = integer_to_binary(get_res_id_counter(ResourceId)),
+    <<Prefix/binary, ResourceId2/binary, N/binary>>.
+
+%% To handle the same resource having multiple actions.
+get_res_id_counter(ResourceId) ->
+    case get({?MODULE, counter, ResourceId}) of
+        undefined ->
+            put({?MODULE, counter, ResourceId}, 1),
+            0;
+        N ->
+            put({?MODULE, counter, ResourceId}, N + 1),
+            N
+    end.
 
 %% Use action ID + resouce ID as bridge name, since the same resource can be reused in different
 %% actions (with different CMDs) in EMQX 4.4 while CMD is a part of a bridge in EMQX 5.1 or later
