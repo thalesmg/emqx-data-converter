@@ -385,6 +385,7 @@ defmodule Tests do
         "dynamo",
         "influxdb",
         "rocketmq",
+        "opents",
         "redis"
       ])
 
@@ -407,7 +408,8 @@ defmodule Tests do
     #   - dynamo
     #   - influxdb (2 types)
     #   - rocketmq (2 variants)
-    num_actions = 22
+    #   - opentsdb
+    num_actions = 23
 
     assert length(connectors) == num_actions
 
@@ -436,6 +438,7 @@ defmodule Tests do
         "dynamo",
         "influxdb",
         "rocketmq",
+        "opents",
         "redis"
       ])
 

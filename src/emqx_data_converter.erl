@@ -1498,8 +1498,8 @@ do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
       "EMQX 5.1 or later InfluxDB bridge has no \"int_suffix\" alternative.~n"
       "If needed, please add necessary suffixes manually to EMQX 5.1 or later \"write_syntax\""),
     influxdb_action_resource(Args, InfluxVer, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
-    opentsdb_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
+    opentsdb_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
     tdengine_action_resource(Args, ResId, ResConf);
 %%do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_iotdb">>, ResConf) ->
@@ -1822,17 +1822,17 @@ influx_fields_bin(FieldsOrTags) ->
     %% TODO: quote string literals in field values?
     bin(lists:join(<<",">>, [<<K/binary, "=", V/binary>> || {K, V} <- maps:to_list(FieldsOrTags)])).
 
-opentsdb_bridge(ActId, Args, ResId, ResConf) ->
-    OutConf = maps:merge(maps:with([<<"summary">>, <<"details">>], Args),
+opentsdb_action_resource(Args, ResId, ResConf) ->
+    %% opentsdb's only action parameter is `data', which has no 4.4 equivalent...
+    ActionConf = #{
+        <<"parameters">> => #{},
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"opents">>, make_action_name(ResId), ActionConf},
+    ConnConf = maps:merge(maps:with([<<"summary">>, <<"details">>], Args),
                          maps:with([<<"server">>, <<"pool_size">>], ResConf)),
-    BatchSize = maps:get(<<"max_batch_size">>, Args, <<>>),
-    QueryMode = case maps:get(<<"sync">>, Args, false) of
-                    true -> <<"sync">>;
-                    _ -> <<"async">>
-                end,
-    ResOpts = put_unless_empty(<<"batch_size">>, BatchSize, #{<<"query_mode">> => QueryMode}),
-    OutConf1 = OutConf#{<<"resource_opts">> => ResOpts},
-    {<<"opents">>, bridge_name(ResId, ActId), filter_out_empty(OutConf1)}.
+    Connector = {<<"opents">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 tdengine_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
     ActionParams = filter_out_empty(#{
