@@ -381,6 +381,7 @@ defmodule Tests do
         "clickhouse",
         "hstreamdb",
         "tdengine",
+        "rabbitmq",
         "redis"
       ])
 
@@ -399,7 +400,8 @@ defmodule Tests do
     #   - clickhouse
     #   - hstreamdb
     #   - tdengine
-    num_actions = 16
+    #   - rabbitmq
+    num_actions = 17
 
     assert length(connectors) == num_actions
 
@@ -424,6 +426,7 @@ defmodule Tests do
         "clickhouse",
         "hstreamdb",
         "tdengine",
+        "rabbitmq",
         "redis"
       ])
 

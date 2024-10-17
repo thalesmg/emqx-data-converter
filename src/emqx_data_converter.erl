@@ -1509,8 +1509,8 @@ do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, Res
     webhook_action_resource(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
     pulsar_producer_action_resource(Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
-    rabbit_producer_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
+    rabbit_producer_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
     rocket_producer_bridge(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_kafka">>, ResConf) ->
@@ -1907,27 +1907,34 @@ buffer_mode(<<"Disk">>) -> <<"disk">>;
 buffer_mode(<<"Memory+Disk">>) -> <<"hybrid">>;
 buffer_mode(<<>>) -> '$absent'.
 
-rabbit_producer_bridge(ActionId, Args, ResId, #{<<"server">> := Server} = ResConf) ->
+rabbit_producer_action_resource(Args, ResId, #{<<"server">> := Server} = ResConf) ->
+    #{<<"exchange">> := Exchange, <<"routing_key">> := RoutingKey} = Args,
+    DeliveryMode = case maps:get(<<"durable">>, Args, false) of
+        true -> <<"persistent">>;
+        false -> <<"non_persistent">>
+    end,
+    ActionParams = filter_out_empty(#{
+        <<"routing_key">> => RoutingKey,
+        <<"exchange">> => Exchange,
+        <<"payload_template">> => maps:get(<<"payload_tmpl">>, Args, <<>>),
+        <<"delivery_mode">> => DeliveryMode
+    }),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"rabbitmq">>, make_action_name(ResId), ActionConf},
     {Host, Port} = case binary:split(Server, <<":">>) of
                        [H, P] -> {H, binary_to_integer(P)};
                        [H] -> {H, <<>>}
                    end,
     CommonFields = [<<"username">>, <<"password">>, <<"pool_size">>,
                     <<"virtual_host">>, <<"timeout">>, <<"heartbeat">>],
-    OutConf = maps:with(CommonFields, ResConf),
-    #{<<"exchange">> := Exchange, <<"routing_key">> := RoutingKey} = Args,
-    DeliveryMode = case maps:get(<<"durable">>, Args, false) of
-                       true -> <<"persistent">>;
-                       false -> <<"non_persistent">>
-                   end,
-    OutConf1 = OutConf#{<<"server">> => Host,
-                        <<"port">> => Port,
-                        <<"routing_key">> => RoutingKey,
-                        <<"exchange">> => Exchange,
-                        <<"payload_template">> => maps:get(<<"payload_tmpl">>, Args, <<>>),
-                        <<"delivery_mode">> => DeliveryMode
-                       },
-    {<<"rabbitmq">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf0 = maps:with(CommonFields, ResConf),
+    ConnConf1 = ConnConf0#{<<"server">> => Host, <<"port">> => Port},
+    ConnConf = filter_out_empty(ConnConf1),
+    Connector = {<<"rabbitmq">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 rocket_producer_bridge(ActionId, Args, ResId, ResConf) ->
     CommonFields = [<<"servers">>, <<"send_buffer">>,
