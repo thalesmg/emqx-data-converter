@@ -1488,9 +1488,8 @@ do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_cassa">
     cassandra_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
     clickhouse_action_resource(Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
-    #{<<"table">> := Table} = Args,
-    dynamo_bridge(ActId, Table, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
+    dynamo_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
     hstreamdb_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
@@ -1715,14 +1714,27 @@ clickhouse_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"server">> := 
     Connector = {<<"clickhouse">>, make_connector_name(ResId), ConnConf},
     {Action, Connector}.
 
-dynamo_bridge(ActionId, Table, ResId, ResConf) ->
+dynamo_action_resource(Args, ResId, ResConf) ->
+    ActionParams =
+        maps:with(
+          [ <<"table">>
+          , <<"hash_key">>
+          , <<"range_key">>
+          ],
+          Args),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"dynamo">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"pool_size">>,
                     <<"url">>,
+                    <<"region">>,
                     <<"aws_access_key_id">>,
                     <<"aws_secret_access_key">>],
-    OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
-    OutConf1 = OutConf#{<<"table">> => Table},
-    {<<"dynamo">>,  bridge_name(ResId, ActionId), OutConf1}.
+    ConnConf = filter_out_empty(maps:with(CommonFields, ResConf)),
+    Connector = {<<"dynamo">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 hstreamdb_action_resource(Args, ResId, #{<<"server">> := URL} = ResConf) ->
     #{<<"stream">> := Stream, <<"payload_tmpl">> := PayloadTempl} = Args,

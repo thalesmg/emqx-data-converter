@@ -382,6 +382,7 @@ defmodule Tests do
         "hstreamdb",
         "tdengine",
         "rabbitmq",
+        "dynamo",
         "redis"
       ])
 
@@ -401,7 +402,8 @@ defmodule Tests do
     #   - hstreamdb
     #   - tdengine
     #   - rabbitmq
-    num_actions = 17
+    #   - dynamo
+    num_actions = 18
 
     assert length(connectors) == num_actions
 
@@ -427,6 +429,7 @@ defmodule Tests do
         "hstreamdb",
         "tdengine",
         "rabbitmq",
+        "dynamo",
         "redis"
       ])
 
