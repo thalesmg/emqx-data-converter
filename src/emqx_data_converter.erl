@@ -46,8 +46,9 @@
 -define(META_FILENAME, "META.hocon").
 -define(CLUSTER_HOCON_FILENAME, "cluster.hocon").
 -define(BACKUP_MNESIA_DIR, "mnesia").
--define(AUTHN_CHAIN_5_6, 'mqtt:global').
--define(VERSION_5_6, "5.6.1").
+-define(AUTHN_CHAIN, 'mqtt:global').
+%% Current version used as base for the converter
+-define(EMQX_VERSION, "5.8.1").
 
 -define(PLACEHOLDERS,
         [{<<"${username}">>, <<"%u">>},
@@ -216,7 +217,7 @@ export(OutRawConf, BackupName, TarDescriptor, Edition) ->
     BackupBaseName = filename:basename(BackupName),
     BackupTarName = ?tar(BackupName),
     Meta = #{
-             version => ?VERSION_5_6,
+             version => ?EMQX_VERSION,
              edition => Edition
             },
     MetaBin = bin(hocon_pp:do(Meta, #{})),
@@ -274,7 +275,7 @@ convert_retained_messages() ->
             ets:new(emqx_retainer, [set, named_table, public, {keypos, 2}]),
             mnesia_log:dcd2ets(emqx_retainer),
             MsgNum = ets:foldl(fun({retained, Topic, Message44, Expiry}, Count) ->
-                Msg = convert_to_message_5_6(Message44),
+                Msg = convert_to_message_5(Message44),
                 ok = mnesia:dirty_write(emqx_retainer_message,
                         #retained_message{topic = Topic, msg = Msg, expiry_time = Expiry}),
                 Count + 1
@@ -291,7 +292,7 @@ convert_auth_mnesia(#{<<"auth_mnesia">> := AuthMnesiaData}, UserIdType) ->
               <<Salt:32, PHash/binary>> = base64:decode(P),
               ok = mnesia:dirty_write(
                      emqx_authn_mnesia,
-                     #user_info{user_id = {?AUTHN_CHAIN_5_6, L},
+                     #user_info{user_id = {?AUTHN_CHAIN, L},
                                 password_hash = PHash,
                                 salt = <<Salt:32>>,
                                 is_superuser = false}
@@ -2335,8 +2336,8 @@ make_source_mqtt_republish_rule(MqttSourceIds) ->
         }]
     }.
 
-convert_to_message_5_6(?message_4_4(Id, QoS, From, Flags, Headers, Topic, Payload, Timestamp)) ->
-   ?message_5_6(Id, QoS, From, Flags, Headers, Topic, Payload, Timestamp, #{}).
+convert_to_message_5(?message_4_4(Id, QoS, From, Flags, Headers, Topic, Payload, Timestamp)) ->
+   ?message_5(Id, QoS, From, Flags, Headers, Topic, Payload, Timestamp, #{}).
 
 log_info(Msg) ->
     log_info(Msg, []).

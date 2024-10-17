@@ -2,7 +2,7 @@
 -define(message_4_4(ID, QOS, FROM, FLAGS, HEADERS, TOPIC, PAYLOAD, TIMESTAMP),
         {message, ID, QOS, FROM, FLAGS, HEADERS, TOPIC, PAYLOAD, TIMESTAMP}).
 
--define(message_5_6(ID, QOS, FROM, FLAGS, HEADERS, TOPIC, PAYLOAD, TIMESTAMP, EXTRA),
+-define(message_5(ID, QOS, FROM, FLAGS, HEADERS, TOPIC, PAYLOAD, TIMESTAMP, EXTRA),
         {message, ID, QOS, FROM, FLAGS, HEADERS, TOPIC, PAYLOAD, TIMESTAMP, EXTRA}).
 
 -type user_group() :: binary().
