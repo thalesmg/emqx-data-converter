@@ -1492,12 +1492,12 @@ do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_dynamo"
     dynamo_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
     hstreamdb_action_resource(Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
                           <<"backend_influxdb_http", InfluxVer/binary>>, ResConf) ->
     log_warning(
       "EMQX 5.1 or later InfluxDB bridge has no \"int_suffix\" alternative.~n"
       "If needed, please add necessary suffixes manually to EMQX 5.1 or later \"write_syntax\""),
-    influxdb_bridge(ActId, Args, InfluxVer, ResId, ResConf);
+    influxdb_action_resource(Args, InfluxVer, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
     opentsdb_bridge(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
@@ -1764,36 +1764,41 @@ hstreamdb_action_resource(Args, ResId, #{<<"server">> := URL} = ResConf) ->
     Connector = {<<"hstreamdb">>, make_connector_name(ResId), ConnConf},
     {Action, Connector}.
 
-influxdb_bridge(ActId, ActArgs, InfluxVer, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
-    CommonFields = [<<"precision">>],
+influxdb_action_resource(Args, InfluxVer, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
     #{<<"measurement">> := Measurement,
       <<"tags">> := Tags,
       <<"fields">> := Fields,
       <<"timestamp">> := Ts
-     } = ActArgs,
-    SSL = convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false),
-            ResConf#{<<"ssl">> => maps:get(<<"https_enabled">>, ResConf, false)}),
+     } = Args,
     TagsBin = influx_fields_bin(Tags),
     FieldsBin = influx_fields_bin(Fields),
-    WriteSyntax = maybe_append_influx_tags(Measurement, TagsBin),
-    WriteSyntax1 = string:trim(<<WriteSyntax/binary, " ", FieldsBin/binary, " ", Ts/binary>>),
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = OutConf#{<<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
-                        <<"ssl">> => SSL,
-                        <<"write_syntax">> => WriteSyntax1,
-                       <<"resource_opts">> => common_args_to_action_res_opts(ActArgs)},
-    {InfluxVer1, OutConf2} =
+    WriteSyntax0 = maybe_append_influx_tags(Measurement, TagsBin),
+    WriteSyntax = string:trim(<<WriteSyntax0/binary, " ", FieldsBin/binary, " ", Ts/binary>>),
+    ActionParams0 = maps:with([<<"precision">>], ResConf),
+    ActionParams = ActionParams0#{<<"write_syntax">> => WriteSyntax},
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"influxdb">>, make_action_name(ResId), ActionConf},
+    SSL = convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false),
+                           ResConf#{<<"ssl">> => maps:get(<<"https_enabled">>, ResConf, false)}),
+    ConnParams =
         case InfluxVer of
             <<>> ->
-                Ver = <<"v1">>,
-                FieldsMapV1 = maps:with([<<"database">>, <<"password">>, <<"username">>], ResConf),
-                {Ver, maps:merge(OutConf1, FieldsMapV1)};
+                ConnParams0 = maps:with([<<"database">>, <<"password">>, <<"username">>], ResConf),
+                ConnParams0#{<<"influxdb_type">> => <<"influxdb_api_v1">>};
             <<"_v2">> ->
-                Ver = <<"v2">>,
-                FieldsMapV2 = maps:with([<<"org">>, <<"token">>, <<"bucket">>], ResConf),
-                {Ver, maps:merge(OutConf1, FieldsMapV2)}
+                ConnParams0 = maps:with([<<"org">>, <<"token">>, <<"bucket">>], ResConf),
+                ConnParams0#{<<"influxdb_type">> => <<"influxdb_api_v2">>}
         end,
-    {<<"influxdb_api_", InfluxVer1/binary>>, bridge_name(ResId, ActId), filter_out_empty(OutConf2)}.
+    ConnConf = #{
+        <<"parameters">> => ConnParams,
+        <<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
+        <<"ssl">> => SSL
+    },
+    Connector = {<<"influxdb">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 maybe_append_influx_tags(Measurement, <<>> = _Tags) ->
     Measurement;

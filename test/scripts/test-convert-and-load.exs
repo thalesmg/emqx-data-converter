@@ -383,6 +383,7 @@ defmodule Tests do
         "tdengine",
         "rabbitmq",
         "dynamo",
+        "influxdb",
         "redis"
       ])
 
@@ -403,7 +404,8 @@ defmodule Tests do
     #   - tdengine
     #   - rabbitmq
     #   - dynamo
-    num_actions = 18
+    #   - influxdb (2 types)
+    num_actions = 20
 
     assert length(connectors) == num_actions
 
@@ -430,6 +432,7 @@ defmodule Tests do
         "tdengine",
         "rabbitmq",
         "dynamo",
+        "influxdb",
         "redis"
       ])
 
