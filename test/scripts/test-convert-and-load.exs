@@ -380,6 +380,7 @@ defmodule Tests do
         "pulsar",
         "clickhouse",
         "hstreamdb",
+        "tdengine",
         "redis"
       ])
 
@@ -397,7 +398,8 @@ defmodule Tests do
     #   - pulsar
     #   - clickhouse
     #   - hstreamdb
-    num_actions = 15
+    #   - tdengine
+    num_actions = 16
 
     assert length(connectors) == num_actions
 
@@ -421,6 +423,7 @@ defmodule Tests do
         "pulsar",
         "clickhouse",
         "hstreamdb",
+        "tdengine",
         "redis"
       ])
 

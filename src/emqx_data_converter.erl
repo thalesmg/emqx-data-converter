@@ -1501,8 +1501,8 @@ do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
     influxdb_bridge(ActId, Args, InfluxVer, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
     opentsdb_bridge(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
-    tdengine_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
+    tdengine_action_resource(Args, ResId, ResConf);
 %%do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_iotdb">>, ResConf) ->
 %%    %% TODO: looks like it may need rewriting rule sql to port it to EMQX5.1
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, ResConf) ->
@@ -1803,16 +1803,24 @@ opentsdb_bridge(ActId, Args, ResId, ResConf) ->
     OutConf1 = OutConf#{<<"resource_opts">> => ResOpts},
     {<<"opents">>, bridge_name(ResId, ActId), filter_out_empty(OutConf1)}.
 
-tdengine_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
+tdengine_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
+    ActionParams = filter_out_empty(#{
+        <<"database">> => maps:get(<<"db_name">>, Args, <<>>),
+        <<"sql">> => SQL
+    }),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"tdengine">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"pool_size">>,
                     <<"password">>,
                     <<"username">>],
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = OutConf#{<<"sql">> => SQL,
-                        <<"database">> => maps:get(<<"db_name">>, Args, <<>>),
-                        <<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
-                        <<"resource_opts">> => common_args_to_action_res_opts(Args)},
-    {<<"tdengine">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf0 = maps:with(CommonFields, ResConf),
+    ConnConf1 = ConnConf0#{<<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>},
+    ConnConf = filter_out_empty(ConnConf1),
+    Connector = {<<"tdengine">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 webhook_action_resource(_ActionId, Args, ResId, ResConf) ->
     AllConfsIn = maps:merge(Args, ResConf),
