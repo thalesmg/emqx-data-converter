@@ -1469,10 +1469,10 @@ with_common_connnector_fields(ResParams, ConnConf) ->
 
 -define(DATA_ACTION, <<"data_to_", _/binary>>).
 
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
                           <<"backend_redis_", RedisType/binary>>, ResConf) ->
     #{<<"cmd">> := _Cmd} = Args,
-    redis_action_resource(ActId, Args, ResId, RedisType, ResConf);
+    redis_action_resource(Args, ResId, RedisType, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS/binary>>, ResConf)
   when RDBMS =:= <<"pgsql">>;
        RDBMS =:= <<"mysql">>;
@@ -1481,39 +1481,37 @@ do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_", RDBMS
        RDBMS =:= <<"matrix">>;
        RDBMS =:= <<"timescale">> ->
     sqldb_action_resource(RDBMS, ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
                           <<"backend_mongo_", MongoType/binary>>, ResConf) ->
-    #{<<"payload_tmpl">> := PayloadTmpl, <<"collection">> := Collection} = Args,
-    mongodb_bridge(ActId, PayloadTmpl, Collection, ResId, MongoType, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
-    cassandra_bridge(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
-    clickhouse_bridge(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
-    #{<<"table">> := Table} = Args,
-    dynamo_bridge(ActId, Table, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
-    hstreamdb_bridge(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId,
+    mongodb_action_resource(Args, ResId, MongoType, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_cassa">>, ResConf) ->
+    cassandra_action_resource(Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_clickhouse">>, ResConf) ->
+    clickhouse_action_resource(Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_dynamo">>, ResConf) ->
+    dynamo_action_resource(Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_hstreamdb">>, ResConf) ->
+    hstreamdb_action_resource(Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId,
                           <<"backend_influxdb_http", InfluxVer/binary>>, ResConf) ->
     log_warning(
       "EMQX 5.1 or later InfluxDB bridge has no \"int_suffix\" alternative.~n"
       "If needed, please add necessary suffixes manually to EMQX 5.1 or later \"write_syntax\""),
-    influxdb_bridge(ActId, Args, InfluxVer, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
-    opentsdb_bridge(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
-    tdengine_bridge(ActId, Args, ResId, ResConf);
+    influxdb_action_resource(Args, InfluxVer, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_opentsdb">>, ResConf) ->
+    opentsdb_action_resource(Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"backend_tdengine">>, ResConf) ->
+    tdengine_action_resource(Args, ResId, ResConf);
 %%do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"backend_iotdb">>, ResConf) ->
 %%    %% TODO: looks like it may need rewriting rule sql to port it to EMQX5.1
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"web_hook">>, ResConf) ->
     webhook_action_resource(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
-    pulsar_producer_bridge(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
-    rabbit_producer_bridge(ActId, Args, ResId, ResConf);
-do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
-    rocket_producer_bridge(ActId, Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_pulsar">>, ResConf) ->
+    pulsar_producer_action_resource(Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_rabbit">>, ResConf) ->
+    rabbit_producer_action_resource(Args, ResId, ResConf);
+do_convert_action_resource(?DATA_ACTION, _ActId, Args, ResId, <<"bridge_rocket">>, ResConf) ->
+    rocket_producer_action_resource(Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_kafka">>, ResConf) ->
     kafka_action_resource(ActId, Args, ResId, ResConf);
 do_convert_action_resource(?DATA_ACTION, ActId, Args, ResId, <<"bridge_gcp_pubsub">>, ResConf) ->
@@ -1538,15 +1536,29 @@ resource_by_id(ResId, Resources) ->
 
 make_action_name(ResourceId) ->
     make_component_name(ResourceId, <<"resource:">>, <<"action_">>).
+
 make_connector_name(ResourceId) ->
     make_component_name(ResourceId, <<"resource:">>, <<"connector_">>).
+
 make_component_name(ResourceId, OldPrefix, Prefix) ->
     ResourceId1 = case string:prefix(ResourceId, OldPrefix) of
                       nomatch -> ResourceId;
                       Id -> Id
                   end,
     ResourceId2 = binary:replace(ResourceId1, <<":">>, <<"_">>, [global]),
-    <<Prefix/binary, ResourceId2/binary>>.
+    N = integer_to_binary(get_res_id_counter(ResourceId)),
+    <<Prefix/binary, ResourceId2/binary, N/binary>>.
+
+%% To handle the same resource having multiple actions.
+get_res_id_counter(ResourceId) ->
+    case get({?MODULE, counter, ResourceId}) of
+        undefined ->
+            put({?MODULE, counter, ResourceId}, 1),
+            0;
+        N ->
+            put({?MODULE, counter, ResourceId}, N + 1),
+            N
+    end.
 
 %% Use action ID + resouce ID as bridge name, since the same resource can be reused in different
 %% actions (with different CMDs) in EMQX 4.4 while CMD is a part of a bridge in EMQX 5.1 or later
@@ -1561,7 +1573,7 @@ bridge_name(ResourceId, ActionId) ->
 filter_out_empty(Map) ->
     maps:filter(fun(_K, V) -> V =/= <<>> end, Map).
 
-common_args_to_res_opts(Args) ->
+common_args_to_action_res_opts(Args) ->
     %% Async is default for both 4.4 and 5.1+
     Mode = maps:get(<<"insert_mode">>, Args, <<"async">>),
     ResOpts = #{<<"query_mode">> => Mode},
@@ -1576,7 +1588,7 @@ common_args_to_res_opts(Args) ->
             ResOpts
     end.
 
-redis_action_resource(ActionId, #{<<"cmd">> := Cmd} = Args, ResId, RedisType, ResConf) ->
+redis_action_resource(#{<<"cmd">> := Cmd} = Args, ResId, RedisType, ResConf) ->
     CommonFields = [<<"server">>, <<"servers">>, <<"pool_size">>,
                     <<"database">>, <<"password">>, <<"sentinel">>],
     ConnParams0 = filter_out_empty(maps:with(CommonFields, ResConf)),
@@ -1595,7 +1607,7 @@ redis_action_resource(ActionId, #{<<"cmd">> := Cmd} = Args, ResId, RedisType, Re
          },
     ActionConf = #{
         <<"parameters">> => ActionParams,
-        <<"resource_opts">> => common_args_to_res_opts(Args)
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
     },
     Action = {<<"redis">>, make_action_name(ResId), ActionConf},
     Connector = {<<"redis">>, make_connector_name(ResId), ConnectorConf},
@@ -1618,7 +1630,7 @@ sqldb_action_resource(RDBMS, _ActionId, #{<<"sql">> := SQL} = Args, ResId, ResCo
                    ],
     ActionConfs = #{
         <<"parameters">> => #{<<"sql">> => SQL},
-        <<"resource_opts">> => common_args_to_res_opts(Args)
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
     },
     OutConnConf = filter_out_empty(maps:with(CommonFields, ResConf1)),
     OutConnConf1 = maybe_add_ssl_sql(RDBMS, OutConnConf, ResConf1),
@@ -1632,124 +1644,175 @@ maybe_add_ssl_sql(RDBMS, OutConf, _ResConf) when RDBMS =:= <<"oracle">>;
 maybe_add_ssl_sql(_RDBMS, OutConf, ResConf) ->
     OutConf#{<<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)}.
 
-mongodb_bridge(ActionId, PayloadTempl, Collection, ResId, MongoType, ResConf) ->
+mongodb_action_resource(#{<<"payload_tmpl">> := PayloadTemplate, <<"collection">> := Collection} = Args, ResId, MongoType, ResConf) ->
+    ConnParams0 =
+        case MongoType of
+            <<"single">> ->
+                 Params0 = maps:with([<<"servers">>, <<"w_mode">>], ResConf),
+                 emqx_data_converter_utils:rename(<<"servers">>, <<"server">>, Params0);
+            <<"rs">> ->
+                 Params0 = maps:with(
+                             [ <<"servers">>
+                             , <<"w_mode">>
+                             , <<"r_mode">>
+                             , <<"rs_set_name">>
+                             ], ResConf),
+                 emqx_data_converter_utils:rename(<<"rs_set_name">>, <<"replica_set_name">>, Params0);
+            <<"sharded">> ->
+                 maps:with(
+                   [ <<"servers">>
+                   , <<"w_mode">>
+                   ], ResConf)
+        end,
+    ConnParams = ConnParams0#{<<"mongo_type">> => MongoType},
     Username = maps:get(<<"login">>, ResConf, <<>>),
     CommonFields = [<<"auth_source">>,
                     <<"pool_size">>,
                     <<"database">>,
                     <<"password">>,
-                    <<"w_mode">>,
-                    <<"srv_record">>,
-                    <<"servers">>],
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = case MongoType of
-                   <<"single">> ->
-                       {Server, Conf} = maps:take(<<"servers">>, OutConf),
-                       Conf#{<<"server">> => Server};
-                   <<"rs">> ->
-                       RMode = maps:get(<<"r_mode">>, ResConf, <<>>),
-                       OutConf#{<<"r_mode">> => RMode,
-                                <<"replica_set_name">> => maps:get(<<"rs_set_name">>, ResConf)};
-                   <<"sharded">> -> OutConf
-               end,
-    OutConf2 = OutConf1#{<<"username">> => Username,
-                         <<"collection">> => Collection,
-                         <<"payload_template">> => PayloadTempl,
-                         <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf),
-                         %% required field in EMQX 5.1 or later
-                         <<"resource_opts">> => #{}},
-    OutConf3 = case ResConf of
+                    <<"srv_record">>],
+    ConnConf0 = maps:with(CommonFields, ResConf),
+    ConnConf1 = ConnConf0#{
+        <<"username">> => Username,
+        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)},
+    ConnConf2 = case ResConf of
                    #{<<"connectTimeoutMS">> := Timeout} when is_integer(Timeout) ->
                        TimeoutBin = <<(integer_to_binary(Timeout))/binary, "ms">>,
-                       OutConf2#{<<"topology">> => #{<<"connect_timeout_ms">> => TimeoutBin}};
-                   _ -> OutConf2
+                       ConnConf1#{<<"topology">> => #{<<"connect_timeout_ms">> => TimeoutBin}};
+                   _ -> ConnConf1
                end,
-    {<<"mongodb_", MongoType/binary>>, bridge_name(ResId, ActionId), filter_out_empty(OutConf3)}.
+    ConnConf = ConnConf2#{<<"parameters">> => ConnParams},
+    Connector = {<<"mongodb">>, make_connector_name(ResId), ConnConf},
+    ActionParams = #{
+        <<"collection">> => Collection,
+        <<"payload_template">> => PayloadTemplate
+    },
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"mongodb">>, make_action_name(ResId), ActionConf},
+    {Action, Connector}.
 
-cassandra_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"nodes">> := Servers} = ResConf) ->
+cassandra_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"nodes">> := Servers} = ResConf) ->
+    ActionParams = #{<<"cql">> => SQL},
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"cassandra">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"keyspace">>,
                     <<"password">>,
                     <<"pool_size">>,
                     <<"username">>],
-    OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
-    OutConf1 = OutConf#{<<"servers">> => Servers,
-                        <<"cql">> => SQL,
-                        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf),
-                        <<"resource_opts">> => common_args_to_res_opts(Args)},
-    {<<"cassandra">>, bridge_name(ResId, ActionId), OutConf1}.
+    ConnConf0 = filter_out_empty(maps:with(CommonFields, ResConf)),
+    ConnConf = ConnConf0#{
+        <<"servers">> => Servers,
+        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)},
+    Connector = {<<"cassandra">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
-clickhouse_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"server">> := URL} = ResConf) ->
+clickhouse_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"server">> := URL} = ResConf) ->
+    ActionParams = #{<<"sql">> => SQL},
+    ActionConf = #{<<"parameters">> => ActionParams,
+                   <<"resource_opts">> => common_args_to_action_res_opts(Args)},
+    Action = {<<"clickhouse">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"database">>,
                     <<"pool_size">>],
     Passw = maps:get(<<"key">>, ResConf, <<>>),
     Username = maps:get(<<"user">>, ResConf, <<>>),
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = OutConf#{<<"password">> => Passw,
+    ConnConf0 = maps:with(CommonFields, ResConf),
+    ConnConf = ConnConf0#{<<"password">> => Passw,
                         <<"username">> => Username,
-                        <<"url">> => URL,
-                        <<"sql">> => SQL,
-                       <<"resource_opts">> => common_args_to_res_opts(Args)},
-    {<<"clickhouse">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+                        <<"url">> => URL},
+    Connector = {<<"clickhouse">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
-dynamo_bridge(ActionId, Table, ResId, ResConf) ->
+dynamo_action_resource(Args, ResId, ResConf) ->
+    ActionParams =
+        maps:with(
+          [ <<"table">>
+          , <<"hash_key">>
+          , <<"range_key">>
+          ],
+          Args),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"dynamo">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"pool_size">>,
                     <<"url">>,
+                    <<"region">>,
                     <<"aws_access_key_id">>,
                     <<"aws_secret_access_key">>],
-    OutConf = filter_out_empty(maps:with(CommonFields, ResConf)),
-    OutConf1 = OutConf#{<<"table">> => Table},
-    {<<"dynamo">>,  bridge_name(ResId, ActionId), OutConf1}.
+    ConnConf = filter_out_empty(maps:with(CommonFields, ResConf)),
+    Connector = {<<"dynamo">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
-hstreamdb_bridge(ActionId, Args, ResId, #{<<"server">> := URL} = ResConf) ->
+hstreamdb_action_resource(Args, ResId, #{<<"server">> := URL} = ResConf) ->
     #{<<"stream">> := Stream, <<"payload_tmpl">> := PayloadTempl} = Args,
-    CommonFields = [<<"pool_size">>],
+    ActionParams = filter_out_empty(#{
+        <<"stream">> => Stream,
+        <<"record_template">> => PayloadTempl,
+        <<"aggregation_pool_size">> => maps:get(<<"aggregation_pool_size">>, Args, <<>>),
+        <<"writer_pool_size">> => maps:get(<<"writer_pool_size">>, Args, <<>>),
+        <<"partition_key">> => maps:get(<<"partitioning_key">>, Args, <<>>)
+    }),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"hstreamdb">>, make_action_name(ResId), ActionConf},
     GRPCTimeout = case ResConf of
                       #{<<"grpc_timeout">> := T} when is_integer(T) ->
                           <<(integer_to_binary(T))/binary, "ms">>;
                       _ ->
                           <<>>
                   end,
-    PartitionKey = maps:get(<<"partitioning_key">>, Args, <<>>),
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = OutConf#{<<"url">> => URL,
-                        <<"grpc_timeout">> => GRPCTimeout,
-                        <<"stream">> => Stream,
-                        <<"partition_key">> => PartitionKey,
-                        <<"record_template">> => PayloadTempl,
-                        <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf),
-                        <<"resource_opts">> => common_args_to_res_opts(Args)},
-    {<<"hstreamdb">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf1 =
+        #{<<"url">> => URL,
+          <<"grpc_timeout">> => GRPCTimeout,
+          <<"ssl">> => convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false), ResConf)},
+    ConnConf = filter_out_empty(ConnConf1),
+    Connector = {<<"hstreamdb">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
-influxdb_bridge(ActId, ActArgs, InfluxVer, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
-    CommonFields = [<<"precision">>],
+influxdb_action_resource(Args, InfluxVer, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
     #{<<"measurement">> := Measurement,
       <<"tags">> := Tags,
       <<"fields">> := Fields,
       <<"timestamp">> := Ts
-     } = ActArgs,
-    SSL = convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false),
-            ResConf#{<<"ssl">> => maps:get(<<"https_enabled">>, ResConf, false)}),
+     } = Args,
     TagsBin = influx_fields_bin(Tags),
     FieldsBin = influx_fields_bin(Fields),
-    WriteSyntax = maybe_append_influx_tags(Measurement, TagsBin),
-    WriteSyntax1 = string:trim(<<WriteSyntax/binary, " ", FieldsBin/binary, " ", Ts/binary>>),
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = OutConf#{<<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
-                        <<"ssl">> => SSL,
-                        <<"write_syntax">> => WriteSyntax1,
-                       <<"resource_opts">> => common_args_to_res_opts(ActArgs)},
-    {InfluxVer1, OutConf2} =
+    WriteSyntax0 = maybe_append_influx_tags(Measurement, TagsBin),
+    WriteSyntax = string:trim(<<WriteSyntax0/binary, " ", FieldsBin/binary, " ", Ts/binary>>),
+    ActionParams0 = maps:with([<<"precision">>], ResConf),
+    ActionParams = ActionParams0#{<<"write_syntax">> => WriteSyntax},
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"influxdb">>, make_action_name(ResId), ActionConf},
+    SSL = convert_ssl_opts(maps:get(<<"ssl">>, ResConf, false),
+                           ResConf#{<<"ssl">> => maps:get(<<"https_enabled">>, ResConf, false)}),
+    ConnParams =
         case InfluxVer of
             <<>> ->
-                Ver = <<"v1">>,
-                FieldsMapV1 = maps:with([<<"database">>, <<"password">>, <<"username">>], ResConf),
-                {Ver, maps:merge(OutConf1, FieldsMapV1)};
+                ConnParams0 = maps:with([<<"database">>, <<"password">>, <<"username">>], ResConf),
+                ConnParams0#{<<"influxdb_type">> => <<"influxdb_api_v1">>};
             <<"_v2">> ->
-                Ver = <<"v2">>,
-                FieldsMapV2 = maps:with([<<"org">>, <<"token">>, <<"bucket">>], ResConf),
-                {Ver, maps:merge(OutConf1, FieldsMapV2)}
+                ConnParams0 = maps:with([<<"org">>, <<"token">>, <<"bucket">>], ResConf),
+                ConnParams0#{<<"influxdb_type">> => <<"influxdb_api_v2">>}
         end,
-    {<<"influxdb_api_", InfluxVer1/binary>>, bridge_name(ResId, ActId), filter_out_empty(OutConf2)}.
+    ConnConf = #{
+        <<"parameters">> => ConnParams,
+        <<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
+        <<"ssl">> => SSL
+    },
+    Connector = {<<"influxdb">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 maybe_append_influx_tags(Measurement, <<>> = _Tags) ->
     Measurement;
@@ -1759,28 +1822,36 @@ influx_fields_bin(FieldsOrTags) ->
     %% TODO: quote string literals in field values?
     bin(lists:join(<<",">>, [<<K/binary, "=", V/binary>> || {K, V} <- maps:to_list(FieldsOrTags)])).
 
-opentsdb_bridge(ActId, Args, ResId, ResConf) ->
-    OutConf = maps:merge(maps:with([<<"summary">>, <<"details">>], Args),
+opentsdb_action_resource(Args, ResId, ResConf) ->
+    %% opentsdb's only action parameter is `data', which has no 4.4 equivalent...
+    ActionConf = #{
+        <<"parameters">> => #{},
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"opents">>, make_action_name(ResId), ActionConf},
+    ConnConf = maps:merge(maps:with([<<"summary">>, <<"details">>], Args),
                          maps:with([<<"server">>, <<"pool_size">>], ResConf)),
-    BatchSize = maps:get(<<"max_batch_size">>, Args, <<>>),
-    QueryMode = case maps:get(<<"sync">>, Args, false) of
-                    true -> <<"sync">>;
-                    _ -> <<"async">>
-                end,
-    ResOpts = put_unless_empty(<<"batch_size">>, BatchSize, #{<<"query_mode">> => QueryMode}),
-    OutConf1 = OutConf#{<<"resource_opts">> => ResOpts},
-    {<<"opents">>, bridge_name(ResId, ActId), filter_out_empty(OutConf1)}.
+    Connector = {<<"opents">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
-tdengine_bridge(ActionId, #{<<"sql">> := SQL} = Args, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
+tdengine_action_resource(#{<<"sql">> := SQL} = Args, ResId, #{<<"host">> := H, <<"port">> := P} = ResConf) ->
+    ActionParams = filter_out_empty(#{
+        <<"database">> => maps:get(<<"db_name">>, Args, <<>>),
+        <<"sql">> => SQL
+    }),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"tdengine">>, make_action_name(ResId), ActionConf},
     CommonFields = [<<"pool_size">>,
                     <<"password">>,
                     <<"username">>],
-    OutConf = maps:with(CommonFields, ResConf),
-    OutConf1 = OutConf#{<<"sql">> => SQL,
-                        <<"database">> => maps:get(<<"db_name">>, Args, <<>>),
-                        <<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>,
-                        <<"resource_opts">> => common_args_to_res_opts(Args)},
-    {<<"tdengine">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf0 = maps:with(CommonFields, ResConf),
+    ConnConf1 = ConnConf0#{<<"server">> => <<H/binary, ":", (integer_to_binary(P))/binary>>},
+    ConnConf = filter_out_empty(ConnConf1),
+    Connector = {<<"tdengine">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 webhook_action_resource(_ActionId, Args, ResId, ResConf) ->
     AllConfsIn = maps:merge(Args, ResConf),
@@ -1805,18 +1876,7 @@ webhook_action_resource(_ActionId, Args, ResId, ResConf) ->
     Connector = {<<"http">>, make_connector_name(ResId), filter_out_empty(ConnConf1)},
     {Action, Connector}.
 
-pulsar_producer_bridge(ActionId, #{<<"topic">> := Topic} = Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
-    Authn = case maps:get(<<"authentication_type">>, ResConf, <<>>) of
-                <<"none">> -> <<"none">>;
-                <<>> -> <<"none">>;
-                <<"basic">> ->
-                    [User, Pass] = binary:split(maps:get(<<"secret">>, ResConf), <<":">>),
-                    #{<<"username">> => User, <<"password">> => Pass};
-                <<"token">> ->
-                    #{<<"jwt">> => maps:get(<<"jwt">>, ResConf)}
-            end,
-    CommonFields = [<<"compression">>,<<"sync_timeout">>, <<"send_bufer">>, <<"batch_size">>],
-    OutConf = maps:with(CommonFields, ResConf),
+pulsar_producer_action_resource(#{<<"topic">> := Topic} = Args, ResId, #{<<"servers">> := Servers} = ResConf) ->
     Key = key_to_template(maps:get(<<"key">>, Args, <<>>)),
     Tmpl = maps:get(<<"payload_tmpl">>, Args, <<>>),
     Msg = put_unless_empty(<<"value">>, Tmpl, #{<<"key">> => Key}),
@@ -1825,25 +1885,45 @@ pulsar_producer_bridge(ActionId, #{<<"topic">> := Topic} = Args, ResId, #{<<"ser
                  <<"segment_bytes">> => maps:get(<<"segment_bytes">>, Args, <<>>),
                  <<"per_partition_limit">> => maps:get(<<"max_total_bytes">>, Args, <<>>)
                 }),
+    ActionParams0 =
+        maps:with(
+          [ <<"sync_timeout">>
+          , <<"compression">>
+          , <<"send_buffer">>
+          , <<"batch_size">>
+          ],
+          ResConf
+         ),
+    ActionParams = filter_out_empty(ActionParams0#{
+        <<"message">> => Msg,
+        <<"pulsar_topic">> => Topic,
+        <<"buffer">> => Buffer,
+        <<"retention_period">> => maps:get(<<"retention_period">>, Args, <<>>),
+        <<"strategy">> => maps:get(<<"strategy">>, Args, <<>>)
+    }),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"pulsar">>, make_action_name(ResId), ActionConf},
+    Authn = case maps:get(<<"authentication_type">>, ResConf, <<"none">>) of
+                <<"none">> ->
+                    <<"none">>;
+                <<"basic">> ->
+                    [User, Pass] = binary:split(maps:get(<<"secret">>, ResConf), <<":">>),
+                    #{<<"username">> => User, <<"password">> => Pass};
+                <<"token">> ->
+                    #{<<"jwt">> => maps:get(<<"jwt">>, ResConf)}
+            end,
     IsSslEnabled = lists:any(fun(B) -> B =:= true end,
         [infer_ssl_from_uri(Uri) || Uri <- string:lexemes(Servers, ", ")]),
-    OutConf1 = OutConf#{<<"servers">> => Servers,
-                        <<"authentication">> => Authn,
-                        <<"ssl">> => convert_ssl_opts(IsSslEnabled, ResConf),
-                        <<"pulsar_topic">> => Topic,
-                        <<"strategy">> => maps:get(<<"strategy">>, Args, <<>>),
-                        <<"message">> => Msg,
-                        <<"buffer">> => Buffer,
-                        <<"retention_period">> => maps:get(<<"retention_period">>, Args, <<>>)
-                       },
-    case Args of
-        #{<<"type">> := <<"sync">>} ->
-            log_warning(
-              "sync Pulsar bridge mode is not supported in EMQX 5.1 or later,"
-              " async mode will be used");
-        _ -> ok
-    end,
-    {<<"pulsar_producer">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf1 = #{<<"servers">> => Servers,
+                  <<"authentication">> => Authn,
+                  <<"ssl">> => convert_ssl_opts(IsSslEnabled, ResConf)
+                 },
+    ConnConf = filter_out_empty(ConnConf1),
+    Connector = {<<"pulsar">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 %% Pulsar, Kafka producer
 key_to_template(<<"none">>) -> '$absent';
@@ -1858,45 +1938,68 @@ buffer_mode(<<"Disk">>) -> <<"disk">>;
 buffer_mode(<<"Memory+Disk">>) -> <<"hybrid">>;
 buffer_mode(<<>>) -> '$absent'.
 
-rabbit_producer_bridge(ActionId, Args, ResId, #{<<"server">> := Server} = ResConf) ->
+rabbit_producer_action_resource(Args, ResId, #{<<"server">> := Server} = ResConf) ->
+    #{<<"exchange">> := Exchange, <<"routing_key">> := RoutingKey} = Args,
+    DeliveryMode = case maps:get(<<"durable">>, Args, false) of
+        true -> <<"persistent">>;
+        false -> <<"non_persistent">>
+    end,
+    ActionParams = filter_out_empty(#{
+        <<"routing_key">> => RoutingKey,
+        <<"exchange">> => Exchange,
+        <<"payload_template">> => maps:get(<<"payload_tmpl">>, Args, <<>>),
+        <<"delivery_mode">> => DeliveryMode
+    }),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"rabbitmq">>, make_action_name(ResId), ActionConf},
     {Host, Port} = case binary:split(Server, <<":">>) of
                        [H, P] -> {H, binary_to_integer(P)};
                        [H] -> {H, <<>>}
                    end,
     CommonFields = [<<"username">>, <<"password">>, <<"pool_size">>,
                     <<"virtual_host">>, <<"timeout">>, <<"heartbeat">>],
-    OutConf = maps:with(CommonFields, ResConf),
-    #{<<"exchange">> := Exchange, <<"routing_key">> := RoutingKey} = Args,
-    DeliveryMode = case maps:get(<<"durable">>, Args, false) of
-                       true -> <<"persistent">>;
-                       false -> <<"non_persistent">>
-                   end,
-    OutConf1 = OutConf#{<<"server">> => Host,
-                        <<"port">> => Port,
-                        <<"routing_key">> => RoutingKey,
-                        <<"exchange">> => Exchange,
-                        <<"payload_template">> => maps:get(<<"payload_tmpl">>, Args, <<>>),
-                        <<"delivery_mode">> => DeliveryMode
-                       },
-    {<<"rabbitmq">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+    ConnConf0 = maps:with(CommonFields, ResConf),
+    ConnConf1 = ConnConf0#{<<"server">> => Host, <<"port">> => Port},
+    ConnConf = filter_out_empty(ConnConf1),
+    Connector = {<<"rabbitmq">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
-rocket_producer_bridge(ActionId, Args, ResId, ResConf) ->
-    CommonFields = [<<"servers">>, <<"send_buffer">>,
-                    <<"refresh_interval">>, <<"sync_timeout">>,
-                    <<"secret_key">>, <<"access_key">>, <<"security_token">>],
-    OutConf = maps:with(CommonFields, ResConf),
-    maybe_warn_not_supported("RocketMQ bridge", "namespace", maps:get(<<"namespace">>, ResConf, <<>>)),
-    maybe_warn_not_supported("RocketMQ bridge", "key", maps:get(<<"key">>, ResConf, <<>>)),
-    maybe_warn_not_supported("RocketMQ bridge",
-                             "strategy",
-                             maps:get(<<"strategy">>, ResConf, <<>>),
-                             [<<>>, <<"roundrobin">>]),
-    ResOpts = filter_out_empty(#{<<"query_mode">> => maps:get(<<"type">>, Args, <<>>),
-                                 <<"batch_size">> => maps:get(<<"batch_size">>, Args, <<>>)}),
-    OutConf1 = OutConf#{<<"resource_opts">> => ResOpts,
-                        <<"topic">> => maps:get(<<"topic">>, Args),
-                        <<"template">> => maps:get(<<"payload_tmpl">>, Args, <<>>)},
-    {<<"rocketmq">>, bridge_name(ResId, ActionId), filter_out_empty(OutConf1)}.
+rocket_producer_action_resource(Args, ResId, ResConf) ->
+    ActionParams0 =
+        maps:with(
+          [ <<"send_buffer">>
+          , <<"refresh_interval">>
+          , <<"sync_timeout">>
+          ],
+          ResConf),
+    ActionParams = filter_out_empty(ActionParams0#{
+        <<"topic">> => maps:get(<<"topic">>, Args),
+        <<"template">> => maps:get(<<"payload_tmpl">>, Args, <<>>),
+        <<"strategy">> => get_and_maybe_warn_not_supported(
+                            "RocketMQ bridge",
+                            <<"strategy">>,
+                            maps:get(<<"strategy">>, Args, <<>>),
+                            [<<>>, <<"roundrobin">>])
+    }),
+    get_and_maybe_warn_not_supported("RocketMQ bridge", "key", maps:get(<<"key">>, ResConf, <<>>)),
+    ActionConf = #{
+        <<"parameters">> => ActionParams,
+        <<"resource_opts">> => common_args_to_action_res_opts(Args)
+    },
+    Action = {<<"rocketmq">>, make_action_name(ResId), ActionConf},
+    CommonFields =
+        [ <<"servers">>
+        , <<"secret_key">>
+        , <<"access_key">>
+        , <<"security_token">>
+        , <<"namespace">>
+        ],
+    ConnConf = maps:with(CommonFields, ResConf),
+    Connector = {<<"rocketmq">>, make_connector_name(ResId), ConnConf},
+    {Action, Connector}.
 
 kafka_action_resource(_ActionId, Args, ResId, ResConf) ->
     ConnectorType = <<"kafka_producer">>,
@@ -2103,17 +2206,19 @@ kafka_auth(<<"KERBEROS">>, ResConf) ->
             '$absent'
     end.
 
-maybe_warn_not_supported(ResourceDesc, Key, Val) ->
-    maybe_warn_not_supported(ResourceDesc, Key, Val, [<<>>]).
-maybe_warn_not_supported(ResourceDesc, Key, Val, Supported) ->
-    case lists:member(string:trim(Val), Supported) of
+get_and_maybe_warn_not_supported(ResourceDesc, Key, Val) ->
+    get_and_maybe_warn_not_supported(ResourceDesc, Key, Val, [<<>>]).
+get_and_maybe_warn_not_supported(ResourceDesc, Key, Val0, Supported) ->
+    Val = string:trim(Val0),
+    case lists:member(Val, Supported) of
         true ->
-            ok;
+            Val;
         false ->
             log_warning(
               "Resource: \"~s\" has field: \"~s\"=\"~s\", which is not supported "
               "in EMQX 5.1 or later",
-              [ResourceDesc, Key, Val])
+              [ResourceDesc, Key, Val]),
+            <<>>
     end.
 
 infer_ssl_from_uri(Url) when is_binary(Url) ->
