@@ -52,5 +52,5 @@ case "$ARCH" in
         ;;
 esac
 
-VSN="$(grep -E ".+vsn.+" _build/default/lib/emqx_data_converter/ebin/emqx_data_converter.app | cut -d '"' -f2)"
+VSN="${VSN:-$(grep -E ".+vsn.+" _build/default/lib/emqx_data_converter/ebin/emqx_data_converter.app | cut -d '"' -f2)}"
 cp "./_build/emqx_data_converter.tar.gz" "./emqx-data-converter-${VSN}-${SYSTEM}-${ARCH}.tar.gz"
