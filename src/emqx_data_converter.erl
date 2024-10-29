@@ -1561,16 +1561,6 @@ get_res_id_counter(ResourceId) ->
             N
     end.
 
-%% Use action ID + resouce ID as bridge name, since the same resource can be reused in different
-%% actions (with different CMDs) in EMQX 4.4 while CMD is a part of a bridge in EMQX 5.1 or later
-bridge_name(ResourceId, ActionId) ->
-    ResourceId1 = case string:prefix(ResourceId, <<"resource:">>) of
-                      nomatch -> ResourceId;
-                      Id -> Id
-                  end,
-    ResourceId2 = binary:replace(ResourceId1, <<":">>, <<"_">>, [global]),
-    <<ActionId/binary, "_", ResourceId2/binary>>.
-
 filter_out_empty(Map) ->
     maps:filter(fun(_K, V) -> V =/= <<>> end, Map).
 
