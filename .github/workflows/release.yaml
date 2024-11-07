@@ -78,3 +78,51 @@ jobs:
           files: packages/*
           draft: ${{ github.ref_type != 'tag' }}
           prerelease: ${{ github.ref_type != 'tag' }}
+
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu24.04
+    needs:
+      - init
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.1
+        with:
+          ref: ${{ github.event.inputs.ref }}
+      - name: Compute RUN_FROM
+        id: run_from
+        run: |
+          RUN_FROM=$(./scripts/compute-run-from.sh ${{ matrix.os }})
+          echo "RUN_FROM=$RUN_FROM" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Docker Metadata action
+        uses: docker/metadata-action@v5.5.1
+        id: meta
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - uses: docker/setup-buildx-action@v2
+      - uses: docker/setup-qemu-action@v2
+      - uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v6.9.0
+        with:
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_FROM=ghcr.io/emqx/emqx-builder/${{ needs.init.outputs.BUILDER_VSN }}:${{ needs.init.outputs.ELIXIR_VSN }}-${{ needs.init.outputs.OTP_VSN }}-${{ matrix.os }}
