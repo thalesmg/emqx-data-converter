@@ -34,6 +34,27 @@ tar -xf emqx_data_converter.tar.gz
 emqx_data_converter/bin/emqx_data_converter <input file path>
 ```
 
+# Quick start Docker
+
+To run using a ready Docker image, you may use the following command, replacing paths accordingly:
+
+```sh
+docker run --rm -it \
+  -v /path/to/backup.json:/mnt/backup.json \
+  -v /path/where/to/place/output:/output \
+  -v /path/to/emqx4/data/dir:/emqx4data \
+  ghcr.io/emqx/emqx-data-converter:latest \
+    -o /output \
+    -r /emqx4data \
+    /mnt/backup.json
+```
+
+More usage info may be obtained with:
+
+```sh
+docker run --rm -it ghcr.io/emqx/emqx-data-converter:latest
+```
+
 # Usage
 
 Basic usage:
