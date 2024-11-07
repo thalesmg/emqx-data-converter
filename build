@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+rebar3 escriptize
+
+DIST_DIR="${DIST_DIR:-dist}"
+
+ERL_ROOT=$(erl -noinput -eval 'io:format("~s",[code:root_dir()]),halt().')
+ERL_DIR=$(basename $ERL_ROOT)
+rm -rf "$DIST_DIR"
+cp -R ${ERL_ROOT%/} _build/
+mv _build/default/bin/emqx_data_converter _build/$ERL_DIR/bin/emqx_data_converter.escript
+cp -f _build/$ERL_DIR/bin/escript _build/$ERL_DIR/bin/emqx_data_converter
+mkdir "$DIST_DIR"
+mv _build/$ERL_DIR/* "$DIST_DIR/."
