@@ -298,6 +298,33 @@ defmodule Tests do
       TH.import_table("emqx_app", outdir)
   """
 
+  def delete_all_of_resouce(api_slug) do
+    TH.api_req!(:get, api_slug)
+    |> Map.fetch!(:body)
+    |> Enum.map(fn %{"name" => name, "type" => type} ->
+      TH.api_req!(:delete, api_slug <> "/#{type}:#{name}")
+    end)
+  end
+
+  def delete_all_actions(), do: delete_all_of_resouce("actions")
+  def delete_all_connectors(), do: delete_all_of_resouce("connectors")
+
+  def delete_all_rules() do
+    api_slug = "rules"
+    TH.api_req!(:get, api_slug)
+    |> Map.fetch!(:body)
+    |> Map.fetch!("data")
+    |> Enum.map(fn %{"id" => id} ->
+      TH.api_req!(:delete, api_slug <> "/#{id}")
+    end)
+  end
+
+  def cleanup_bridges_and_rules() do
+    delete_all_rules()
+    delete_all_actions()
+    delete_all_connectors()
+  end
+
   setup_all do
     {:ok, %{image: System.fetch_env!("EMQX_IMAGE")}}
   end
@@ -360,6 +387,8 @@ defmodule Tests do
     on_exit(fn -> File.rm(converted_path) end)
     :ok = TH.import!(converted_path)
 
+    on_exit(&cleanup_bridges_and_rules/0)
+
     connectors =
       TH.api_req!(:get, "connectors")
       |> Map.fetch!(:body)
@@ -407,11 +436,12 @@ defmodule Tests do
     #   - rabbitmq
     #   - dynamo
     #   - influxdb (2 types)
-    #   - rocketmq (2 variants)
+    #   - rocketmq (2 variants, but both share the same connector config, hence 1 connector)
     #   - opentsdb
     num_actions = 23
 
-    assert length(connectors) == num_actions
+    #   - rocketmq (2 variants, but both share the same connector config, hence 1 connector)
+    assert length(connectors) == num_actions - 1
 
     redis_types =
       connectors
@@ -452,5 +482,29 @@ defmodule Tests do
       |> MapSet.new()
 
     assert redis_types == MapSet.new(["single", "cluster", "sentinel"])
+  end
+
+  # Checks that, if possible, attempts to reuse connectors with the same configuration
+  # when multiple rules reference the same config/resource.
+  @tag :bridges
+  test "connector deduplication" do
+    path = "test/data/multiple_rules_same_connector1.json"
+    {:ok, converted_path} = TH.convert!(path)
+    on_exit(fn -> File.rm(converted_path) end)
+    :ok = TH.import!(converted_path)
+
+    on_exit(&cleanup_bridges_and_rules/0)
+
+    connectors =
+      TH.api_req!(:get, "connectors")
+      |> Map.fetch!(:body)
+
+    actions =
+      TH.api_req!(:get, "actions")
+      |> Map.fetch!(:body)
+
+    assert [_, _, _] = actions
+    # only one connector, as it has the same configuration in 4.x
+    assert [%{"actions" => [_, _, _]}] = connectors
   end
 end

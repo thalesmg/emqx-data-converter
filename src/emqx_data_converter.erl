@@ -1,5 +1,7 @@
 -module(emqx_data_converter).
 
+-feature(maybe_expr, enable).
+
 -include("emqx_data_converter.hrl").
 
 %% API exports
@@ -1381,10 +1383,14 @@ convert_rule(Rule, Resources, ActionsIn, ConnectorsIn) ->
                   case convert_action_resource(Action, Resources) of
                       {standalone_action, ActionOut} ->
                           {[ActionOut | ActionIdsAcc], ActionsAcc, ConnectorsAcc};
-                      {OutActionId, OutAction, OutConnector} ->
+                      {OutActionId, OutAction0, OutConnector} ->
                           ActionsIdsAcc1 = [OutActionId | ActionIdsAcc],
+                          {ActionType, ActionName, ActionConf0} = OutAction0,
+                          #{ action := ActionConf
+                           , conn_acc := ConnectorsAcc1
+                           } = dedup_connector_config(OutConnector, ActionConf0, ConnectorsAcc),
+                          OutAction = {ActionType, ActionName, ActionConf},
                           ActionsAcc1 = add_config_by_type_name(OutAction, ActionsAcc),
-                          ConnectorsAcc1 = add_config_by_type_name(OutConnector, ConnectorsAcc),
                           {ActionsIdsAcc1, ActionsAcc1, ConnectorsAcc1};
                       undefined ->
                           {ActionIdsAcc, ActionsAcc, ConnectorsAcc}
@@ -2223,6 +2229,30 @@ infer_ssl_from_uri(Url) when is_binary(Url) ->
                 #{scheme := <<"pulsar+ssl">>} -> true;
                 #{scheme := _} -> false
             end
+    end.
+
+%% Deduplicate if the exact same configuration exists
+dedup_connector_config({ConnType, _ConnName, ConnConf} = Connector, ActionConf0, ConnAcc0) ->
+    maybe
+        #{ConnType := NamesToConfs} ?= ConnAcc0,
+        {ok, SameConfigName} ?= find_same_config(ConnConf, NamesToConfs),
+        ActionConf = ActionConf0#{<<"connector">> := SameConfigName},
+        #{action => ActionConf, conn_acc => ConnAcc0}
+    else
+        _ ->
+            ConnAcc = add_config_by_type_name(Connector, ConnAcc0),
+            #{action => ActionConf0, conn_acc => ConnAcc}
+    end.
+
+find_same_config(Conf, NamesToConfs) ->
+    WithSameConf = [Name
+                    || {Name, Conf0} <- maps:to_list(NamesToConfs),
+                       Conf0 == Conf],
+    case WithSameConf of
+        [] ->
+            error;
+        [Name] ->
+            {ok, Name}
     end.
 
 add_config_by_type_name({Type, Name, Conf}, MapIn) ->
